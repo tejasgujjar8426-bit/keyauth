@@ -1,20 +1,18 @@
 import sqlite3
 import uuid
 import secrets
-import os
+import os # Import the os module
 from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from argon2 import PasswordHasher
 
+
 # --- Setup ---
 ph = PasswordHasher()
 app = FastAPI()
-
-# --- Database Path Configuration (For Render) ---
-IS_ON_RENDER = os.environ.get('RENDER', False)
-DB_PATH = os.path.join("/var/data", "platform_users.db") if IS_ON_RENDER else "platform_users.db"
+DB_NAME = "platform_users.db"
 
 # --- CORS Middleware ---
 app.add_middleware(
@@ -24,10 +22,13 @@ app.add_middleware(
 
 # --- Database Initialization ---
 def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
+    with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
+        # Sellers Table
         cursor.execute("CREATE TABLE IF NOT EXISTS sellers (username TEXT PRIMARY KEY, hashed_password TEXT NOT NULL, ownerid TEXT NOT NULL UNIQUE)")
+        # Applications Table
         cursor.execute("CREATE TABLE IF NOT EXISTS applications (appid TEXT PRIMARY KEY, app_secret TEXT NOT NULL UNIQUE, name TEXT NOT NULL, ownerid TEXT NOT NULL, FOREIGN KEY (ownerid) REFERENCES sellers (ownerid))")
+        # End-Users Table
         cursor.execute("CREATE TABLE IF NOT EXISTS end_users (id INTEGER PRIMARY KEY AUTOINCREMENT, appid TEXT NOT NULL, username TEXT NOT NULL, password TEXT NOT NULL, expires_at TEXT NOT NULL, hwid TEXT, UNIQUE(appid, username), FOREIGN KEY (appid) REFERENCES applications (appid))")
         conn.commit()
 
@@ -36,14 +37,10 @@ class SellerAuthRequest(BaseModel): username: str; password: str
 class AppCreateRequest(BaseModel): ownerid: str; app_name: str
 class EndUserCreateRequest(BaseModel): ownerid: str; appid: str; username: str; password: str; days: int
 class ApiLoginRequest(BaseModel): ownerid: str; app_secret: str; username: str; password: str; hwid: str
+# New models for user management
 class UserListRequest(BaseModel): appid: str
 class UserDeleteRequest(BaseModel): user_id: int
 class UserExtendRequest(BaseModel): user_id: int; days: int
-
-# --- Health Check Endpoint for UptimeRobot ---
-@app.get("/health")
-def health_check():
-    return {"status": "ok"}
 
 # --- Seller Panel API Endpoints ---
 @app.post("/register")
@@ -52,9 +49,10 @@ def seller_register(data: SellerAuthRequest):
     try:
         hashed_password = ph.hash(data.password)
         ownerid = str(uuid.uuid4())
-        with sqlite3.connect(DB_PATH) as conn:
+        with sqlite3.connect(DB_NAME) as conn:
             cursor = conn.cursor()
-            cursor.execute("INSERT INTO sellers (username, hashed_password, ownerid) VALUES (?, ?, ?)", (data.username, hashed_password, ownerid))
+            cursor.execute("INSERT INTO sellers (username, hashed_password, ownerid) VALUES (?, ?, ?)",
+                           (data.username, hashed_password, ownerid))
             conn.commit()
         return {"status": "success"}
     except sqlite3.IntegrityError:
@@ -63,11 +61,12 @@ def seller_register(data: SellerAuthRequest):
 @app.post("/login")
 def seller_login(data: SellerAuthRequest):
     # (Same as before)
-    with sqlite3.connect(DB_PATH) as conn:
+    with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT hashed_password, ownerid FROM sellers WHERE username = ?", (data.username,))
         result = cursor.fetchone()
-    if not result: raise HTTPException(status_code=404, detail="Seller not found.")
+    if not result:
+        raise HTTPException(status_code=404, detail="Seller not found.")
     hashed_password, ownerid = result
     try:
         ph.verify(hashed_password, data.password)
@@ -75,20 +74,23 @@ def seller_login(data: SellerAuthRequest):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid password.")
 
-# ... (Other endpoints like /apps/create, /apps/list, /users/create are the same)
 @app.post("/apps/create")
 def create_app(data: AppCreateRequest):
-    appid = str(uuid.uuid4()); app_secret = secrets.token_hex(16)
-    with sqlite3.connect(DB_PATH) as conn:
+    # (Same as before)
+    appid = str(uuid.uuid4())
+    app_secret = secrets.token_hex(16)
+    with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO applications (appid, app_secret, name, ownerid) VALUES (?, ?, ?, ?)", (appid, app_secret, data.app_name, data.ownerid))
+        cursor.execute("INSERT INTO applications (appid, app_secret, name, ownerid) VALUES (?, ?, ?, ?)",
+                       (appid, app_secret, data.app_name, data.ownerid))
         conn.commit()
     return {"status": "success", "appid": appid, "app_secret": app_secret}
 
 @app.post("/apps/list")
 def list_apps(data: dict):
+    # (Same as before)
     ownerid = data.get("ownerid")
-    with sqlite3.connect(DB_PATH) as conn:
+    with sqlite3.connect(DB_NAME) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT name, appid, app_secret FROM applications WHERE ownerid = ?", (ownerid,))
@@ -97,19 +99,20 @@ def list_apps(data: dict):
     
 @app.post("/users/create")
 def create_end_user(data: EndUserCreateRequest):
+    # (Same as before)
     if data.days == 0: expires_at = datetime(9999, 12, 31)
     else: expires_at = datetime.utcnow() + timedelta(days=data.days)
-    with sqlite3.connect(DB_PATH) as conn:
+    with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO end_users (appid, username, password, expires_at) VALUES (?, ?, ?, ?)", (data.appid, data.username, data.password, expires_at.isoformat()))
+        cursor.execute("INSERT INTO end_users (appid, username, password, expires_at) VALUES (?, ?, ?, ?)",
+                       (data.appid, data.username, data.password, expires_at.isoformat()))
         conn.commit()
     return {"status": "success", "message": f"User '{data.username}' created."}
 
-
-# --- User Management Endpoints ---
+# --- NEW: User Management Endpoints ---
 @app.post("/users/list")
 def list_users(data: UserListRequest):
-    with sqlite3.connect(DB_PATH) as conn:
+    with sqlite3.connect(DB_NAME) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT id, username, expires_at FROM end_users WHERE appid = ?", (data.appid,))
@@ -118,7 +121,7 @@ def list_users(data: UserListRequest):
 
 @app.post("/users/delete")
 def delete_user(data: UserDeleteRequest):
-    with sqlite3.connect(DB_PATH) as conn:
+    with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM end_users WHERE id = ?", (data.user_id,))
         conn.commit()
@@ -126,7 +129,7 @@ def delete_user(data: UserDeleteRequest):
 
 @app.post("/users/extend")
 def extend_user(data: UserExtendRequest):
-    with sqlite3.connect(DB_PATH) as conn:
+    with sqlite3.connect(DB_NAME) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT expires_at FROM end_users WHERE id = ?", (data.user_id,))
@@ -135,13 +138,7 @@ def extend_user(data: UserExtendRequest):
             raise HTTPException(status_code=404, detail="User not found.")
         
         current_expiry = datetime.fromisoformat(result['expires_at'])
-        
-        # --- THIS IS THE FIX ---
-        # If the year is 9999, they already have a lifetime key. Don't extend.
-        if current_expiry.year == 9999:
-            return {"status": "success", "message": "User already has a lifetime subscription.", "new_expiry": current_expiry.isoformat()}
-        # --- END OF FIX ---
-
+        # If subscription is already expired, extend from now. Otherwise, extend from the current expiry date.
         base_date = max(datetime.utcnow(), current_expiry)
         new_expiry = base_date + timedelta(days=data.days)
         
@@ -153,7 +150,7 @@ def extend_user(data: UserExtendRequest):
 @app.post("/api/1.0/user_login")
 def user_login(data: ApiLoginRequest):
     # (Same as before)
-    with sqlite3.connect(DB_PATH) as conn:
+    with sqlite3.connect(DB_NAME) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT appid FROM applications WHERE ownerid = ? AND app_secret = ?", (data.ownerid, data.app_secret))
