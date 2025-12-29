@@ -1,6 +1,7 @@
 import uuid
 import secrets
 import os
+import json
 import sys
 from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException, Header
@@ -16,24 +17,25 @@ def log_warn(msg): print(f"\033[93m[WARNING]\033[0m {msg}")
 def log_err(msg): print(f"\033[91m[ERROR]\033[0m {msg}")
 
 # --- FIREBASE SETUP ---
-base_dir = os.path.dirname(os.path.abspath(__file__))
-key_path = os.path.join(base_dir, "serviceAccountKey.json")
-
-log_info(f"Looking for key at: {key_path}")
-
-if not os.path.exists(key_path):
-    log_err("serviceAccountKey.json NOT FOUND!")
-    print("Please download it from Firebase Console -> Project Settings -> Service Accounts")
-    sys.exit(1)
+# --- FIREBASE SETUP ---
+log_info("Initializing Firebase using ENV variable")
 
 try:
-    cred = credentials.Certificate(key_path)
-    firebase_admin.initialize_app(cred)
+    service_account_info = json.loads(os.environ["SERVICE_ACCOUNT_JSON"])
+    cred = credentials.Certificate(service_account_info)
+
+    if not firebase_admin._apps:
+        firebase_admin.initialize_app(cred)
+
     db = firestore.client()
     log_success("Connected to Firebase Firestore!")
+except KeyError:
+    log_err("SERVICE_ACCOUNT_JSON environment variable NOT FOUND")
+    sys.exit(1)
 except Exception as e:
     log_err(f"Failed to connect to Firebase: {e}")
     sys.exit(1)
+
 
 app = FastAPI()
 
@@ -213,3 +215,4 @@ def delete_seller(data: SellerDeleteRequest):
         a.reference.delete()
         
     return {"status": "success"}
+
