@@ -1,187 +1,215 @@
-import sqlite3
 import uuid
 import secrets
 import os
+import sys
 from datetime import datetime, timedelta
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from argon2 import PasswordHasher
+import firebase_admin
+from firebase_admin import credentials, firestore
 
+# --- COLOR LOGGING ---
+def log_info(msg): print(f"\033[94m[INFO]\033[0m {msg}")
+def log_success(msg): print(f"\033[92m[SUCCESS]\033[0m {msg}")
+def log_warn(msg): print(f"\033[93m[WARNING]\033[0m {msg}")
+def log_err(msg): print(f"\033[91m[ERROR]\033[0m {msg}")
 
-# --- Setup ---
-ph = PasswordHasher()
+# --- FIREBASE SETUP ---
+base_dir = os.path.dirname(os.path.abspath(__file__))
+key_path = os.path.join(base_dir, "serviceAccountKey.json")
+
+log_info(f"Looking for key at: {key_path}")
+
+if not os.path.exists(key_path):
+    log_err("serviceAccountKey.json NOT FOUND!")
+    print("Please download it from Firebase Console -> Project Settings -> Service Accounts")
+    sys.exit(1)
+
+try:
+    cred = credentials.Certificate(key_path)
+    firebase_admin.initialize_app(cred)
+    db = firestore.client()
+    log_success("Connected to Firebase Firestore!")
+except Exception as e:
+    log_err(f"Failed to connect to Firebase: {e}")
+    sys.exit(1)
+
 app = FastAPI()
-DB_NAME = "platform_users.db"
 
-# --- CORS Middleware ---
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
+    CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
 )
 
-# --- Database Initialization ---
-def init_db():
-    with sqlite3.connect(DB_NAME) as conn:
-        cursor = conn.cursor()
-        cursor.execute("PRAGMA foreign_keys = ON;")
-        cursor.execute("CREATE TABLE IF NOT EXISTS sellers (username TEXT PRIMARY KEY, hashed_password TEXT NOT NULL, ownerid TEXT NOT NULL UNIQUE)")
-        cursor.execute("CREATE TABLE IF NOT EXISTS applications (appid TEXT PRIMARY KEY, app_secret TEXT NOT NULL UNIQUE, name TEXT NOT NULL, ownerid TEXT NOT NULL, FOREIGN KEY (ownerid) REFERENCES sellers (ownerid) ON DELETE CASCADE)")
-        cursor.execute("CREATE TABLE IF NOT EXISTS end_users (id INTEGER PRIMARY KEY AUTOINCREMENT, appid TEXT NOT NULL, username TEXT NOT NULL, password TEXT NOT NULL, expires_at TEXT NOT NULL, hwid TEXT, UNIQUE(appid, username), FOREIGN KEY (appid) REFERENCES applications (appid) ON DELETE CASCADE)")
-        conn.commit()
-
-# --- Pydantic Models ---
-class SellerAuthRequest(BaseModel): username: str; password: str
+# --- MODELS ---
+class SellerSyncRequest(BaseModel): firebase_uid: str; email: str
 class SellerDeleteRequest(BaseModel): ownerid: str
 class AppCreateRequest(BaseModel): ownerid: str; app_name: str
 class AppDeleteRequest(BaseModel): appid: str
-class EndUserCreateRequest(BaseModel): ownerid: str; appid: str; username: str; password: str; days: int
+class EndUserCreateRequest(BaseModel): ownerid: str; appid: str; username: str; password: str; days: int; expire_str: str = None
 class ApiLoginRequest(BaseModel): ownerid: str; app_secret: str; username: str; password: str; hwid: str
 class UserListRequest(BaseModel): appid: str
-class UserDeleteRequest(BaseModel): user_id: int
-class UserExtendRequest(BaseModel): user_id: int; days: int
+class UserDeleteRequest(BaseModel): user_id: str
+class UserExtendRequest(BaseModel): user_id: str; days: int
 
-# --- Seller Panel API Endpoints ---
-@app.post("/register")
-def seller_register(data: SellerAuthRequest):
-    try:
-        hashed_password = ph.hash(data.password)
-        ownerid = str(uuid.uuid4())
-        with sqlite3.connect(DB_NAME) as conn:
-            cursor = conn.cursor()
-            cursor.execute("INSERT INTO sellers (username, hashed_password, ownerid) VALUES (?, ?, ?)",
-                           (data.username, hashed_password, ownerid))
-            conn.commit()
-        return {"status": "success"}
-    except sqlite3.IntegrityError:
-        raise HTTPException(status_code=400, detail="Seller username already taken.")
+# --- API ENDPOINTS ---
 
-@app.post("/login")
-def seller_login(data: SellerAuthRequest):
-    with sqlite3.connect(DB_NAME) as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT hashed_password, ownerid FROM sellers WHERE username = ?", (data.username,))
-        result = cursor.fetchone()
-    if not result:
-        raise HTTPException(status_code=404, detail="Seller not found.")
-    hashed_password, ownerid = result
-    try:
-        ph.verify(hashed_password, data.password)
-        return {"status": "success", "ownerid": ownerid}
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid password.")
-
-@app.post("/seller/delete")
-def delete_seller(data: SellerDeleteRequest):
-    with sqlite3.connect(DB_NAME) as conn:
-        cursor = conn.cursor()
-        cursor.execute("PRAGMA foreign_keys = ON;")
-        cursor.execute("DELETE FROM sellers WHERE ownerid = ?", (data.ownerid,))
-        # **FIX:** Check if a row was actually deleted. If not, the ID was invalid.
-        if cursor.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Seller account not found. Deletion failed.")
-        conn.commit()
-    return {"status": "success", "message": "Seller account and all associated data deleted."}
+@app.post("/auth/sync")
+def sync_seller(data: SellerSyncRequest):
+    print(f"\n--- SYNC REQUEST: {data.email} ({data.firebase_uid}) ---")
+    
+    doc_ref = db.collection('sellers').document(data.firebase_uid)
+    doc = doc_ref.get()
+    
+    if doc.exists:
+        existing_id = doc.to_dict().get('ownerid')
+        log_success(f"FOUND EXISTING SELLER. OwnerID: {existing_id}")
+        return {"status": "success", "ownerid": existing_id}
+    else:
+        log_warn("SELLER NOT FOUND. Creating NEW account...")
+        new_ownerid = str(uuid.uuid4())
+        doc_ref.set({
+            'email': data.email,
+            'ownerid': new_ownerid,
+            'created_at': firestore.SERVER_TIMESTAMP
+        })
+        log_success(f"Created New Seller. OwnerID: {new_ownerid}")
+        return {"status": "success", "ownerid": new_ownerid}
 
 @app.post("/apps/create")
 def create_app(data: AppCreateRequest):
+    log_info(f"Creating App '{data.app_name}' for Owner: {data.ownerid}")
     appid = str(uuid.uuid4())
     app_secret = secrets.token_hex(16)
-    with sqlite3.connect(DB_NAME) as conn:
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO applications (appid, app_secret, name, ownerid) VALUES (?, ?, ?, ?)",
-                       (appid, app_secret, data.app_name, data.ownerid))
-        conn.commit()
+    
+    db.collection('applications').add({
+        'appid': appid,
+        'app_secret': app_secret,
+        'name': data.app_name,
+        'ownerid': data.ownerid,
+        'created_at': firestore.SERVER_TIMESTAMP
+    })
+    log_success(f"App Saved! ID: {appid}")
     return {"status": "success", "appid": appid, "app_secret": app_secret}
 
 @app.post("/apps/list")
 def list_apps(data: dict):
     ownerid = data.get("ownerid")
-    with sqlite3.connect(DB_NAME) as conn:
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute("SELECT name, appid, app_secret FROM applications WHERE ownerid = ?", (ownerid,))
-        apps = [dict(row) for row in cursor.fetchall()]
-    return {"status": "success", "apps": apps}
+    log_info(f"Listing apps for Owner: {ownerid}")
+    
+    apps_ref = db.collection('applications').where('ownerid', '==', ownerid).stream()
+    apps_list = []
+    for doc in apps_ref:
+        d = doc.to_dict()
+        apps_list.append({"name": d['name'], "appid": d['appid'], "app_secret": d['app_secret']})
+    
+    log_success(f"Found {len(apps_list)} apps.")
+    return {"status": "success", "apps": apps_list}
 
 @app.post("/apps/delete")
 def delete_app(data: AppDeleteRequest):
-    with sqlite3.connect(DB_NAME) as conn:
-        cursor = conn.cursor()
-        cursor.execute("PRAGMA foreign_keys = ON;")
-        cursor.execute("DELETE FROM applications WHERE appid = ?", (data.appid,))
-        # **FIX:** Check if a row was actually deleted. If not, the ID was invalid.
-        if cursor.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Application not found. Deletion failed.")
-        conn.commit()
-    return {"status": "success", "message": "Application and its users deleted."}
+    log_warn(f"Deleting App: {data.appid}")
+    apps = db.collection('applications').where('appid', '==', data.appid).limit(1).stream()
+    found = False
+    for a in apps:
+        a.reference.delete()
+        found = True
+    
+    if found:
+        # Delete users
+        users = db.collection('users').where('appid', '==', data.appid).stream()
+        for u in users: u.reference.delete()
+        log_success("App and Users Deleted.")
+        return {"status": "success"}
+    
+    raise HTTPException(status_code=404, detail="App not found")
 
 @app.post("/users/create")
 def create_end_user(data: EndUserCreateRequest):
-    if data.days == 0: expires_at = datetime(9999, 12, 31)
-    else: expires_at = datetime.utcnow() + timedelta(days=data.days)
-    with sqlite3.connect(DB_NAME) as conn:
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO end_users (appid, username, password, expires_at) VALUES (?, ?, ?, ?)",
-                       (data.appid, data.username, data.password, expires_at.isoformat()))
-        conn.commit()
-    return {"status": "success", "message": f"User '{data.username}' created."}
+    log_info(f"Creating User: {data.username}")
+    
+    # Check duplicate
+    dupes = db.collection('users').where('appid', '==', data.appid).where('username', '==', data.username).limit(1).stream()
+    for _ in dupes:
+        log_err("Username exists!")
+        raise HTTPException(status_code=400, detail="Username exists")
+
+    if data.expire_str:
+        # Parse the datetime-local HTML input format
+        expires = datetime.strptime(data.expire_str, "%Y-%m-%dT%H:%M")
+    elif data.days == 0: 
+        expires = datetime(9999, 12, 31)
+    else: 
+        expires = datetime.utcnow() + timedelta(days=data.days)
+
+    db.collection('users').add({
+        'appid': data.appid,
+        'username': data.username,
+        'password': data.password,
+        'expires_at': expires.isoformat(),
+        'hwid': None
+    })
+    log_success("User Created.")
+    return {"status": "success"}
 
 @app.post("/users/list")
 def list_users(data: UserListRequest):
-    with sqlite3.connect(DB_NAME) as conn:
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, username, expires_at FROM end_users WHERE appid = ?", (data.appid,))
-        users = [dict(row) for row in cursor.fetchall()]
-    return {"status": "success", "users": users}
+    log_info(f"Fetching users for App: {data.appid}")
+    users = db.collection('users').where('appid', '==', data.appid).stream()
+    u_list = [{"id": d.id, **d.to_dict()} for d in users]
+    return {"status": "success", "users": u_list}
 
 @app.post("/users/delete")
 def delete_user(data: UserDeleteRequest):
-    with sqlite3.connect(DB_NAME) as conn:
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM end_users WHERE id = ?", (data.user_id,))
-        conn.commit()
-    return {"status": "success", "message": "User deleted."}
+    db.collection('users').document(data.user_id).delete()
+    return {"status": "success"}
 
-@app.post("/users/extend")
-def extend_user(data: UserExtendRequest):
-    with sqlite3.connect(DB_NAME) as conn:
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute("SELECT expires_at FROM end_users WHERE id = ?", (data.user_id,))
-        result = cursor.fetchone()
-        if not result:
-            raise HTTPException(status_code=404, detail="User not found.")
-        
-        current_expiry = datetime.fromisoformat(result['expires_at'])
-        base_date = max(datetime.utcnow(), current_expiry)
-        new_expiry = base_date + timedelta(days=data.days)
-        
-        cursor.execute("UPDATE end_users SET expires_at = ? WHERE id = ?", (new_expiry.isoformat(), data.user_id))
-        conn.commit()
-    return {"status": "success", "new_expiry": new_expiry.isoformat()}
-
-# --- PUBLIC API FOR CLIENT APPLICATIONS ---
 @app.post("/api/1.0/user_login")
 def user_login(data: ApiLoginRequest):
-    with sqlite3.connect(DB_NAME) as conn:
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute("SELECT appid FROM applications WHERE ownerid = ? AND app_secret = ?", (data.ownerid, data.app_secret))
-        app_data = cursor.fetchone()
-        if not app_data: return {"success": False, "message": "Invalid application details."}
-        cursor.execute("SELECT * FROM end_users WHERE username = ? AND appid = ?", (data.username, app_data["appid"]))
-        user_data = cursor.fetchone()
-        if not user_data or user_data["password"] != data.password: return {"success": False, "message": "Invalid credentials."}
-        if datetime.fromisoformat(user_data["expires_at"]) < datetime.utcnow(): return {"success": False, "message": "Subscription has expired."}
-        if user_data["hwid"] is None:
-            cursor.execute("UPDATE end_users SET hwid = ? WHERE id = ?", (data.hwid, user_data["id"]))
-            conn.commit()
-        elif user_data["hwid"] != data.hwid: return {"success": False, "message": "HWID mismatch."}
-    return {"success": True, "message": "Login successful.", "info": { "expires": user_data["expires_at"] }}
+    log_info(f"Login Attempt: {data.username} (HWID: {data.hwid})")
+    
+    # 1. Find App
+    apps = db.collection('applications').where('ownerid', '==', data.ownerid).where('app_secret', '==', data.app_secret).limit(1).stream()
+    app_data = next((a.to_dict() for a in apps), None)
+    
+    if not app_data:
+        log_err("Invalid App Secret/OwnerID")
+        return {"success": False, "message": "Invalid application details."}
 
-# --- Run DB Init ---
-@app.on_event("startup")
-def on_startup():
-    init_db()
+    # 2. Find User
+    users = db.collection('users').where('username', '==', data.username).where('appid', '==', app_data['appid']).limit(1).stream()
+    user_doc = next(users, None)
+    
+    if not user_doc:
+        log_err("User not found")
+        return {"success": False, "message": "Invalid credentials."}
+    
+    u_data = user_doc.to_dict()
+    if u_data['password'] != data.password:
+        log_err("Wrong Password")
+        return {"success": False, "message": "Invalid credentials."}
+        
+    # 3. HWID Lock
+    if u_data.get('hwid') is None:
+        user_doc.reference.update({'hwid': data.hwid})
+        log_success("First Login - HWID Locked")
+    elif u_data['hwid'] != data.hwid:
+        log_err(f"HWID Mismatch! Expected: {u_data['hwid']}, Got: {data.hwid}")
+        return {"success": False, "message": "HWID mismatch."}
+        
+    return {"success": True, "message": "Login successful.", "info": {"expires": u_data['expires_at']}}
+
+@app.post("/seller/delete")
+def delete_seller(data: SellerDeleteRequest):
+    log_warn(f"DELETING SELLER: {data.ownerid}")
+    db.collection('sellers').where('ownerid', '==', data.ownerid).limit(1).get()[0].reference.delete()
+    
+    # Clean apps
+    apps = db.collection('applications').where('ownerid', '==', data.ownerid).stream()
+    for a in apps:
+        # Clean users
+        users = db.collection('users').where('appid', '==', a.get('appid')).stream()
+        for u in users: u.reference.delete()
+        a.reference.delete()
+        
+    return {"status": "success"}
