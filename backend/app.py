@@ -1,10 +1,12 @@
 import uuid
 import secrets
 import os
-import json
 import sys
+import requests
+import json
+import httpx
 from datetime import datetime, timedelta
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import firebase_admin
@@ -18,30 +20,20 @@ def log_err(msg): print(f"\033[91m[ERROR]\033[0m {msg}")
 
 # --- FIREBASE SETUP ---
 # --- FIREBASE SETUP ---
-# Check for Environment Variable first (For Render)
-env_creds = os.getenv("SERVICE_ACCOUNT_JSON")
+service_account_info = os.getenv("SERVICE_ACCOUNT_JSON")
+
+if not service_account_info:
+    log_err("SERVICE_ACCOUNT_JSON environment variable NOT FOUND!")
+    sys.exit(1)
 
 try:
-    if env_creds:
-        log_info("Found SERVICE_ACCOUNT_JSON. Loading from Environment Variable...")
-        cred_dict = json.loads(env_creds)
-        cred = credentials.Certificate(cred_dict)
-    else:
-        # Fallback to local file
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        key_path = os.path.join(base_dir, "serviceAccountKey.json")
-        log_info(f"Looking for key at: {key_path}")
-
-        if not os.path.exists(key_path):
-            log_err("Credentials NOT FOUND! Set SERVICE_ACCOUNT_JSON env var or provide serviceAccountKey.json")
-            sys.exit(1)
-        
-        cred = credentials.Certificate(key_path)
-
+    # Parse the string from the environment variable into a dictionary
+    cred_dict = json.loads(service_account_info)
+    cred = credentials.Certificate(cred_dict)
+    
     firebase_admin.initialize_app(cred)
     db = firestore.client()
     log_success("Connected to Firebase Firestore!")
-
 except Exception as e:
     log_err(f"Failed to connect to Firebase: {e}")
     sys.exit(1)
@@ -62,6 +54,49 @@ class ApiLoginRequest(BaseModel): ownerid: str; app_secret: str; username: str; 
 class UserListRequest(BaseModel): appid: str
 class UserDeleteRequest(BaseModel): user_id: str
 class UserExtendRequest(BaseModel): user_id: str; days: int
+class WebhookSaveRequest(BaseModel): 
+    appid: str
+    webhook_url: str
+    enabled: bool
+    show_hwid: bool
+    show_ip: bool
+    show_app: bool
+    show_expiry: bool
+
+
+async def send_discord_webhook(url, user_data, config, app_name, ip_address):
+    if not url: return
+    
+    fields = []
+    fields.append({"name": "User", "value": f"`{user_data['username']}`", "inline": True})
+    
+    if config.get('show_app'):
+        fields.append({"name": "Application", "value": f"`{app_name}`", "inline": True})
+    
+    if config.get('show_hwid') and user_data.get('hwid'):
+        fields.append({"name": "HWID", "value": f"```{user_data['hwid']}```", "inline": False})
+        
+    if config.get('show_expiry'):
+        exp = user_data.get('expires_at', 'N/A').split('T')[0] 
+        fields.append({"name": "Expiry Date", "value": f"`{exp}`", "inline": True})
+        
+    if config.get('show_ip'):
+        fields.append({"name": "IP Address", "value": f"`{ip_address}`", "inline": True})
+
+    embed = {
+        "title": "Login Authenticated",
+        "color": 65280,
+        "fields": fields,
+        "footer": {"text": "Lynx Auth System"},
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+    # ASYNC HTTP REQUEST
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(url, json={"embeds": [embed]}, timeout=5.0)
+    except Exception as e:
+        print(f"Webhook Error: {e}")
 
 # --- API ENDPOINTS ---
 
@@ -112,7 +147,13 @@ def list_apps(data: dict):
     apps_list = []
     for doc in apps_ref:
         d = doc.to_dict()
-        apps_list.append({"name": d['name'], "appid": d['appid'], "app_secret": d['app_secret']})
+        # EDITED: Added webhook_config to response
+        apps_list.append({
+            "name": d['name'], 
+            "appid": d['appid'], 
+            "app_secret": d['app_secret'],
+            "webhook_config": d.get('webhook_config', {}) 
+        })
     
     log_success(f"Found {len(apps_list)} apps.")
     return {"status": "success", "apps": apps_list}
@@ -176,39 +217,45 @@ def delete_user(data: UserDeleteRequest):
     return {"status": "success"}
 
 @app.post("/api/1.0/user_login")
-def user_login(data: ApiLoginRequest):
+def user_login(data: ApiLoginRequest, request: Request, bg_tasks: BackgroundTasks):
     log_info(f"Login Attempt: {data.username} (HWID: {data.hwid})")
     
     # 1. Find App
     apps = db.collection('applications').where('ownerid', '==', data.ownerid).where('app_secret', '==', data.app_secret).limit(1).stream()
-    app_data = next((a.to_dict() for a in apps), None)
+    app_doc_ref = next(apps, None)
     
-    if not app_data:
-        log_err("Invalid App Secret/OwnerID")
+    if not app_doc_ref:
         return {"success": False, "message": "Invalid application details."}
+
+    app_data = app_doc_ref.to_dict()
 
     # 2. Find User
     users = db.collection('users').where('username', '==', data.username).where('appid', '==', app_data['appid']).limit(1).stream()
     user_doc = next(users, None)
     
     if not user_doc:
-        log_err("User not found")
         return {"success": False, "message": "Invalid credentials."}
     
     u_data = user_doc.to_dict()
     if u_data['password'] != data.password:
-        log_err("Wrong Password")
         return {"success": False, "message": "Invalid credentials."}
         
     # 3. HWID Lock
     if u_data.get('hwid') is None:
         user_doc.reference.update({'hwid': data.hwid})
-        log_success("First Login - HWID Locked")
+        u_data['hwid'] = data.hwid # Update local for webhook
     elif u_data['hwid'] != data.hwid:
-        log_err(f"HWID Mismatch! Expected: {u_data['hwid']}, Got: {data.hwid}")
         return {"success": False, "message": "HWID mismatch."}
-        
+    
+    # --- WEBHOOK TRIGGER ---
+    wh_config = app_data.get('webhook_config')
+    if wh_config and wh_config.get('enabled') and wh_config.get('url'):
+        client_ip = request.client.host
+        bg_tasks.add_task(send_discord_webhook, wh_config['url'], u_data, wh_config, app_data['name'], client_ip)
+    # -----------------------
+
     return {"success": True, "message": "Login successful.", "info": {"expires": u_data['expires_at']}}
+
 
 @app.post("/seller/delete")
 def delete_seller(data: SellerDeleteRequest):
@@ -224,3 +271,25 @@ def delete_seller(data: SellerDeleteRequest):
         a.reference.delete()
         
     return {"status": "success"}
+
+@app.post("/apps/webhook/save")
+def save_webhook(data: WebhookSaveRequest):
+    log_info(f"Updating Webhook for App: {data.appid}")
+    
+    apps = db.collection('applications').where('appid', '==', data.appid).limit(1).stream()
+    found = False
+    for a in apps:
+        a.reference.update({
+            'webhook_config': {
+                'url': data.webhook_url,
+                'enabled': data.enabled,
+                'show_hwid': data.show_hwid,
+                'show_ip': data.show_ip,
+                'show_app': data.show_app,
+                'show_expiry': data.show_expiry
+            }
+        })
+        found = True
+    
+    if found: return {"status": "success"}
+    raise HTTPException(status_code=404, detail="App not found")
