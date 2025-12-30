@@ -68,6 +68,9 @@ async def send_discord_webhook(url, user_data, config, app_name, ip_address):
     if not url:
         return
 
+    # LOG THAT WE ARE TRYING (So you see it in Render logs)
+    log_info(f"ATTEMPTING WEBHOOK to: {url[:20]}...")
+
     fields = []
     fields.append({"name": "User", "value": f"`{user_data['username']}`", "inline": True})
 
@@ -78,12 +81,11 @@ async def send_discord_webhook(url, user_data, config, app_name, ip_address):
         fields.append({"name": "HWID", "value": f"```{user_data['hwid']}```", "inline": False})
 
     if config.get('show_expiry'):
-        # Safety check: handle cases where expiry might be None
         exp_raw = user_data.get('expires_at', 'N/A')
         exp = exp_raw.split('T')[0] if exp_raw else "N/A"
         fields.append({"name": "Expiry Date", "value": f"`{exp}`", "inline": True})
 
-    # [REMOVED IP ADDRESS FIELD LOGIC HERE]
+    # (IP Removed as requested)
 
     embed = {
         "title": "Login Authenticated",
@@ -93,17 +95,31 @@ async def send_discord_webhook(url, user_data, config, app_name, ip_address):
         "timestamp": datetime.utcnow().isoformat()
     }
 
+    # --- THE FIX: FAKE BROWSER HEADERS ---
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "Content-Type": "application/json"
+    }
+
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(url, json={"embeds": [embed]}, timeout=5)
+            # Added headers=headers and follow_redirects=True
+            response = await client.post(
+                url, 
+                json={"embeds": [embed]}, 
+                headers=headers, 
+                timeout=10,
+                follow_redirects=True
+            )
             
             if response.status_code in [200, 204]:
                 log_info(f"Webhook sent successfully for user: {user_data['username']}")
             else:
-                log_err(f"WEBHOOK ERROR {response.status_code}: {response.text}")
+                # THIS WILL PRINT THE REASON IF IT FAILS
+                log_err(f"WEBHOOK FAILED. Status: {response.status_code} | Reason: {response.text}")
                 
     except Exception as e:
-        log_err(f"Failed to send webhook: {e}")
+        log_err(f"WEBHOOK CRASHED: {e}")
 
 # --- API ENDPOINTS ---
 
@@ -256,19 +272,19 @@ async def user_login(data: ApiLoginRequest, request: Request, bg_tasks: Backgrou
     
     # --- WEBHOOK TRIGGER ---
     wh_config = app_data.get('webhook_config', {})
+    print(f"DEBUG: Config Enabled: {wh_config.get('enabled')}, URL: {wh_config.get('url')}")
+
     if wh_config.get('enabled') and wh_config.get('url'):
         x_forwarded_for = request.headers.get("x-forwarded-for")
         client_ip = x_forwarded_for.split(',')[0] if x_forwarded_for else request.client.host
         
         bg_tasks.add_task(send_discord_webhook, wh_config['url'], u_data, wh_config, app_data['name'], client_ip)
-        log_info(f"Webhook task scheduled for {data.username}") # ADD THIS LOG
     else:
         # ADD THIS LOG TO SEE IF IT IS SKIPPING
         log_warn(f"Webhook SKIPPED for {data.username}. Enabled: {wh_config.get('enabled')}, URL present: {bool(wh_config.get('url'))}")
     # -----------------------
 
     return {"success": True, "message": "Login successful.", "info": {"expires": u_data['expires_at']}}
-
 
 @app.post("/seller/delete")
 def delete_seller(data: SellerDeleteRequest):
@@ -306,6 +322,7 @@ def save_webhook(data: WebhookSaveRequest):
     
     if found: return {"status": "success"}
     raise HTTPException(status_code=404, detail="App not found")
+
 
 
 
