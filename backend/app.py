@@ -78,7 +78,9 @@ async def send_discord_webhook(url, user_data, config, app_name, ip_address):
         fields.append({"name": "HWID", "value": f"```{user_data['hwid']}```", "inline": False})
 
     if config.get('show_expiry'):
-        exp = user_data.get('expires_at', 'N/A').split('T')[0]
+        # Safety check: handle cases where expiry might be None
+        exp_raw = user_data.get('expires_at', 'N/A')
+        exp = exp_raw.split('T')[0] if exp_raw else "N/A"
         fields.append({"name": "Expiry Date", "value": f"`{exp}`", "inline": True})
 
     if config.get('show_ip'):
@@ -93,10 +95,17 @@ async def send_discord_webhook(url, user_data, config, app_name, ip_address):
     }
 
     try:
-        # Use httpx for non-blocking request
         async with httpx.AsyncClient() as client:
-            await client.post(url, json={"embeds": [embed]}, timeout=5)
-        log_info(f"Webhook sent successfully for user: {user_data['username']}")
+            response = await client.post(url, json={"embeds": [embed]}, timeout=5)
+            
+            # --- THIS IS THE FIX ---
+            # Discord returns 204 for success. If it's not 204 or 200, it failed.
+            if response.status_code in [200, 204]:
+                log_info(f"Webhook sent successfully for user: {user_data['username']}")
+            else:
+                # This will print the EXACT error from Discord to your logs
+                log_err(f"WEBHOOK ERROR {response.status_code}: {response.text}")
+                
     except Exception as e:
         log_err(f"Failed to send webhook: {e}")
 
@@ -297,6 +306,7 @@ def save_webhook(data: WebhookSaveRequest):
     
     if found: return {"status": "success"}
     raise HTTPException(status_code=404, detail="App not found")
+
 
 
 
