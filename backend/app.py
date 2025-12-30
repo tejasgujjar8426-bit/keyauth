@@ -254,17 +254,21 @@ async def user_login(data: ApiLoginRequest, request: Request, bg_tasks: Backgrou
     # 3. HWID Lock
     if u_data.get('hwid') is None:
         user_doc.reference.update({'hwid': data.hwid})
-        u_data['hwid'] = data.hwid # Update local for webhook
+        u_data['hwid'] = data.hwid 
     elif u_data['hwid'] != data.hwid:
         return {"success": False, "message": "HWID mismatch."}
     
     # --- WEBHOOK TRIGGER ---
-    wh_config = app_data.get('webhook_config')
-    if wh_config and wh_config.get('enabled') and wh_config.get('url'):
-        # FIX: Get the correct client IP on Render
+    wh_config = app_data.get('webhook_config', {})
+    if wh_config.get('enabled') and wh_config.get('url'):
         x_forwarded_for = request.headers.get("x-forwarded-for")
         client_ip = x_forwarded_for.split(',')[0] if x_forwarded_for else request.client.host
+        
         bg_tasks.add_task(send_discord_webhook, wh_config['url'], u_data, wh_config, app_data['name'], client_ip)
+        log_info(f"Webhook task scheduled for {data.username}") # ADD THIS LOG
+    else:
+        # ADD THIS LOG TO SEE IF IT IS SKIPPING
+        log_warn(f"Webhook SKIPPED for {data.username}. Enabled: {wh_config.get('enabled')}, URL present: {bool(wh_config.get('url'))}")
     # -----------------------
 
     return {"success": True, "message": "Login successful.", "info": {"expires": u_data['expires_at']}}
@@ -306,6 +310,7 @@ def save_webhook(data: WebhookSaveRequest):
     
     if found: return {"status": "success"}
     raise HTTPException(status_code=404, detail="App not found")
+
 
 
 
