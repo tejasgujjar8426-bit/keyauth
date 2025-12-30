@@ -68,8 +68,12 @@ async def send_discord_webhook(url, user_data, config, app_name, ip_address):
     if not url:
         return
 
-    # LOG THAT WE ARE TRYING (So you see it in Render logs)
-    log_info(f"ATTEMPTING WEBHOOK to: {url[:20]}...")
+    # --- FIX 1: DOMAIN SWAP (Bypass specific IP blocks) ---
+    # Discord often blocks cloud IPs on 'discord.com' but allows them on 'discordapp.com'
+    if "discord.com" in url:
+        url = url.replace("discord.com", "discordapp.com")
+
+    log_info(f"ATTEMPTING WEBHOOK to: {url[:25]}...")
 
     fields = []
     fields.append({"name": "User", "value": f"`{user_data['username']}`", "inline": True})
@@ -85,7 +89,7 @@ async def send_discord_webhook(url, user_data, config, app_name, ip_address):
         exp = exp_raw.split('T')[0] if exp_raw else "N/A"
         fields.append({"name": "Expiry Date", "value": f"`{exp}`", "inline": True})
 
-    # (IP Removed as requested)
+    # IP Logic removed as per request
 
     embed = {
         "title": "Login Authenticated",
@@ -95,31 +99,50 @@ async def send_discord_webhook(url, user_data, config, app_name, ip_address):
         "timestamp": datetime.utcnow().isoformat()
     }
 
-    # --- THE FIX: FAKE BROWSER HEADERS ---
+    # --- FIX 2: ROBUST HEADERS ---
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json",
         "Content-Type": "application/json"
     }
 
-    try:
-        async with httpx.AsyncClient() as client:
-            # Added headers=headers and follow_redirects=True
-            response = await client.post(
-                url, 
-                json={"embeds": [embed]}, 
-                headers=headers, 
-                timeout=10,
-                follow_redirects=True
-            )
-            
-            if response.status_code in [200, 204]:
-                log_info(f"Webhook sent successfully for user: {user_data['username']}")
-            else:
-                # THIS WILL PRINT THE REASON IF IT FAILS
-                log_err(f"WEBHOOK FAILED. Status: {response.status_code} | Reason: {response.text}")
+    # --- FIX 3: RETRY LOGIC ---
+    async with httpx.AsyncClient() as client:
+        for attempt in range(1, 4): # Try up to 3 times
+            try:
+                response = await client.post(
+                    url, 
+                    json={"embeds": [embed]}, 
+                    headers=headers, 
+                    timeout=10,
+                    follow_redirects=True
+                )
                 
-    except Exception as e:
-        log_err(f"WEBHOOK CRASHED: {e}")
+                # SUCCESS
+                if response.status_code in [200, 204]:
+                    log_success(f"Webhook sent successfully for user: {user_data['username']}")
+                    return
+                
+                # RATE LIMIT (429) - WAIT AND RETRY
+                elif response.status_code == 429:
+                    retry_after = float(response.headers.get("Retry-After", 2.0))
+                    log_warn(f"Rate limited (429). Waiting {retry_after}s... (Attempt {attempt}/3)")
+                    await asyncio.sleep(retry_after)
+                    continue # Try again
+                
+                # IP BAN (403) - STOP TRYING
+                elif response.status_code == 403:
+                    log_err(f"DISCORD BLOCKED RENDER IP (403). Domain swap failed.")
+                    break
+                
+                # OTHER ERRORS
+                else:
+                    log_err(f"WEBHOOK FAILED {response.status_code}: {response.text}")
+                    break
+
+            except Exception as e:
+                log_err(f"Webhook connection error: {e}")
+                break
 
 # --- API ENDPOINTS ---
 
@@ -322,6 +345,7 @@ def save_webhook(data: WebhookSaveRequest):
     
     if found: return {"status": "success"}
     raise HTTPException(status_code=404, detail="App not found")
+
 
 
 
