@@ -219,7 +219,7 @@ def delete_user(data: UserDeleteRequest):
     return {"status": "success"}
 
 @app.post("/api/1.0/user_login")
-def user_login(data: ApiLoginRequest, request: Request, bg_tasks: BackgroundTasks):
+async def user_login(data: ApiLoginRequest, request: Request, bg_tasks: BackgroundTasks):
     log_info(f"Login Attempt: {data.username} (HWID: {data.hwid})")
     
     # 1. Find App
@@ -252,7 +252,9 @@ def user_login(data: ApiLoginRequest, request: Request, bg_tasks: BackgroundTask
     # --- WEBHOOK TRIGGER ---
     wh_config = app_data.get('webhook_config')
     if wh_config and wh_config.get('enabled') and wh_config.get('url'):
-        client_ip = request.client.host
+        # FIX: Get the correct client IP on Render
+        x_forwarded_for = request.headers.get("x-forwarded-for")
+        client_ip = x_forwarded_for.split(',')[0] if x_forwarded_for else request.client.host
         bg_tasks.add_task(send_discord_webhook, wh_config['url'], u_data, wh_config, app_data['name'], client_ip)
     # -----------------------
 
@@ -295,5 +297,6 @@ def save_webhook(data: WebhookSaveRequest):
     
     if found: return {"status": "success"}
     raise HTTPException(status_code=404, detail="App not found")
+
 
 
