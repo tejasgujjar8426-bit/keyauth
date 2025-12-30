@@ -64,22 +64,23 @@ class WebhookSaveRequest(BaseModel):
     show_expiry: bool
 
 
-async def send_discord_webhook(url, user_data, config, app_name, ip_address):
-    if not url: return
-    
+def send_discord_webhook(url, user_data, config, app_name, ip_address):
+    if not url:
+        return
+
     fields = []
     fields.append({"name": "User", "value": f"`{user_data['username']}`", "inline": True})
-    
+
     if config.get('show_app'):
         fields.append({"name": "Application", "value": f"`{app_name}`", "inline": True})
-    
+
     if config.get('show_hwid') and user_data.get('hwid'):
         fields.append({"name": "HWID", "value": f"```{user_data['hwid']}```", "inline": False})
-        
+
     if config.get('show_expiry'):
-        exp = user_data.get('expires_at', 'N/A').split('T')[0] 
+        exp = user_data.get('expires_at', 'N/A').split('T')[0]
         fields.append({"name": "Expiry Date", "value": f"`{exp}`", "inline": True})
-        
+
     if config.get('show_ip'):
         fields.append({"name": "IP Address", "value": f"`{ip_address}`", "inline": True})
 
@@ -91,12 +92,11 @@ async def send_discord_webhook(url, user_data, config, app_name, ip_address):
         "timestamp": datetime.utcnow().isoformat()
     }
 
-    # ASYNC HTTP REQUEST
     try:
-        async with httpx.AsyncClient() as client:
-            await client.post(url, json={"embeds": [embed]}, timeout=5.0)
+        requests.post(url, json={"embeds": [embed]}, timeout=5)
     except Exception as e:
-        print(f"Webhook Error: {e}")
+        print("Webhook error:", e)
+
 
 # --- API ENDPOINTS ---
 
@@ -293,3 +293,4 @@ def save_webhook(data: WebhookSaveRequest):
     
     if found: return {"status": "success"}
     raise HTTPException(status_code=404, detail="App not found")
+
