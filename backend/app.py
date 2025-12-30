@@ -64,7 +64,7 @@ class WebhookSaveRequest(BaseModel):
     show_expiry: bool
 
 
-def send_discord_webhook(url, user_data, config, app_name, ip_address):
+async def send_discord_webhook(url, user_data, config, app_name, ip_address):
     if not url:
         return
 
@@ -93,10 +93,12 @@ def send_discord_webhook(url, user_data, config, app_name, ip_address):
     }
 
     try:
-        requests.post(url, json={"embeds": [embed]}, timeout=5)
+        # Use httpx for non-blocking request
+        async with httpx.AsyncClient() as client:
+            await client.post(url, json={"embeds": [embed]}, timeout=5)
+        log_info(f"Webhook sent successfully for user: {user_data['username']}")
     except Exception as e:
-        print("Webhook error:", e)
-
+        log_err(f"Failed to send webhook: {e}")
 
 # --- API ENDPOINTS ---
 
@@ -293,4 +295,5 @@ def save_webhook(data: WebhookSaveRequest):
     
     if found: return {"status": "success"}
     raise HTTPException(status_code=404, detail="App not found")
+
 
