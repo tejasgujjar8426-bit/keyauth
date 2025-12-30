@@ -83,8 +83,7 @@ async def send_discord_webhook(url, user_data, config, app_name, ip_address):
         exp = exp_raw.split('T')[0] if exp_raw else "N/A"
         fields.append({"name": "Expiry Date", "value": f"`{exp}`", "inline": True})
 
-    if config.get('show_ip'):
-        fields.append({"name": "IP Address", "value": f"`{ip_address}`", "inline": True})
+    # [REMOVED IP ADDRESS FIELD LOGIC HERE]
 
     embed = {
         "title": "Login Authenticated",
@@ -98,12 +97,9 @@ async def send_discord_webhook(url, user_data, config, app_name, ip_address):
         async with httpx.AsyncClient() as client:
             response = await client.post(url, json={"embeds": [embed]}, timeout=5)
             
-            # --- THIS IS THE FIX ---
-            # Discord returns 204 for success. If it's not 204 or 200, it failed.
             if response.status_code in [200, 204]:
                 log_info(f"Webhook sent successfully for user: {user_data['username']}")
             else:
-                # This will print the EXACT error from Discord to your logs
                 log_err(f"WEBHOOK ERROR {response.status_code}: {response.text}")
                 
     except Exception as e:
@@ -310,6 +306,7 @@ def save_webhook(data: WebhookSaveRequest):
     
     if found: return {"status": "success"}
     raise HTTPException(status_code=404, detail="App not found")
+
 
 
 
