@@ -21,20 +21,30 @@ def log_err(msg): print(f"\033[91m[ERROR]\033[0m {msg}")
 
 # --- FIREBASE SETUP ---
 # --- FIREBASE SETUP ---
-service_account_info = os.getenv("SERVICE_ACCOUNT_JSON")
-
-if not service_account_info:
-    log_err("SERVICE_ACCOUNT_JSON environment variable NOT FOUND!")
-    sys.exit(1)
-
 try:
-    # Parse the string from the environment variable into a dictionary
-    cred_dict = json.loads(service_account_info)
-    cred = credentials.Certificate(cred_dict)
+    # 1. Try to get credentials from Environment Variable (Render)
+    env_creds = os.environ.get("FIREBASE_CREDENTIALS")
     
-    firebase_admin.initialize_app(cred)
-    db = firestore.client()
-    log_success("Connected to Firebase Firestore!")
+    if env_creds:
+        cred_dict = json.loads(env_creds)
+        cred = credentials.Certificate(cred_dict)
+        firebase_admin.initialize_app(cred)
+        db = firestore.client()
+        log_success("Connected to Firebase via Environment Variable!")
+        
+    # 2. Fallback to local file (Local Development)
+    elif os.path.exists("serviceAccountKey.json"):
+        with open("serviceAccountKey.json", "r") as f:
+            cred_dict = json.load(f)
+        cred = credentials.Certificate(cred_dict)
+        firebase_admin.initialize_app(cred)
+        db = firestore.client()
+        log_success("Connected to Firebase Firestore via local JSON!")
+        
+    else:
+        log_err("Firebase credentials not found (Env Var or JSON).")
+        sys.exit(1)
+        
 except Exception as e:
     log_err(f"Failed to connect to Firebase: {e}")
     sys.exit(1)
@@ -55,42 +65,32 @@ class ApiLoginRequest(BaseModel): ownerid: str; app_secret: str; username: str; 
 class UserListRequest(BaseModel): appid: str
 class UserDeleteRequest(BaseModel): user_id: str
 class UserExtendRequest(BaseModel): user_id: str; days: int
+
+# FIX: Removed 'show_ip' from this model to match Frontend
 class WebhookSaveRequest(BaseModel): 
     appid: str
     webhook_url: str
     enabled: bool
     show_hwid: bool
-    show_ip: bool
     show_app: bool
     show_expiry: bool
 
+# Admin Models
+class AdminSearchRequest(BaseModel): ownerid: str
+class AdminUpdateRequest(BaseModel): ownerid: str; is_premium: bool; coins: int
 
 async def send_discord_webhook(url, user_data, config, app_name, ip_address):
-    if not url:
-        return
-
-    # --- FIX 1: DOMAIN SWAP (Bypass specific IP blocks) ---
-    # Discord often blocks cloud IPs on 'discord.com' but allows them on 'discordapp.com'
-    if "discord.com" in url:
-        url = url.replace("discord.com", "discordapp.com")
-
-    log_info(f"ATTEMPTING WEBHOOK to: {url[:25]}...")
+    if not url: return
+    if "discord.com" in url: url = url.replace("discord.com", "discordapp.com")
 
     fields = []
     fields.append({"name": "User", "value": f"`{user_data['username']}`", "inline": True})
-
-    if config.get('show_app'):
-        fields.append({"name": "Application", "value": f"`{app_name}`", "inline": True})
-
-    if config.get('show_hwid') and user_data.get('hwid'):
-        fields.append({"name": "HWID", "value": f"```{user_data['hwid']}```", "inline": False})
-
+    if config.get('show_app'): fields.append({"name": "Application", "value": f"`{app_name}`", "inline": True})
+    if config.get('show_hwid') and user_data.get('hwid'): fields.append({"name": "HWID", "value": f"```{user_data['hwid']}```", "inline": False})
     if config.get('show_expiry'):
         exp_raw = user_data.get('expires_at', 'N/A')
         exp = exp_raw.split('T')[0] if exp_raw else "N/A"
         fields.append({"name": "Expiry Date", "value": f"`{exp}`", "inline": True})
-
-    # IP Logic removed as per request
 
     embed = {
         "title": "Login Authenticated",
@@ -100,78 +100,64 @@ async def send_discord_webhook(url, user_data, config, app_name, ip_address):
         "timestamp": datetime.utcnow().isoformat()
     }
 
-    # --- FIX 2: ROBUST HEADERS ---
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/json",
-        "Content-Type": "application/json"
-    }
-
-    # --- FIX 3: RETRY LOGIC ---
+    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json", "Content-Type": "application/json"}
+    
     async with httpx.AsyncClient() as client:
-        for attempt in range(1, 4): # Try up to 3 times
-            try:
-                response = await client.post(
-                    url, 
-                    json={"embeds": [embed]}, 
-                    headers=headers, 
-                    timeout=10,
-                    follow_redirects=True
-                )
-                
-                # SUCCESS
-                if response.status_code in [200, 204]:
-                    log_success(f"Webhook sent successfully for user: {user_data['username']}")
-                    return
-                
-                # RATE LIMIT (429) - WAIT AND RETRY
-                elif response.status_code == 429:
-                    retry_after = float(response.headers.get("Retry-After", 2.0))
-                    log_warn(f"Rate limited (429). Waiting {retry_after}s... (Attempt {attempt}/3)")
-                    await asyncio.sleep(retry_after)
-                    continue # Try again
-                
-                # IP BAN (403) - STOP TRYING
-                elif response.status_code == 403:
-                    log_err(f"DISCORD BLOCKED RENDER IP (403). Domain swap failed.")
-                    break
-                
-                # OTHER ERRORS
-                else:
-                    log_err(f"WEBHOOK FAILED {response.status_code}: {response.text}")
-                    break
-
-            except Exception as e:
-                log_err(f"Webhook connection error: {e}")
-                break
+        try:
+            await client.post(url, json={"embeds": [embed]}, headers=headers, timeout=10)
+        except Exception as e:
+            log_err(f"Webhook error: {e}")
 
 # --- API ENDPOINTS ---
 
 @app.post("/auth/sync")
 def sync_seller(data: SellerSyncRequest):
-    print(f"\n--- SYNC REQUEST: {data.email} ({data.firebase_uid}) ---")
-    
     doc_ref = db.collection('sellers').document(data.firebase_uid)
     doc = doc_ref.get()
     
     if doc.exists:
-        existing_id = doc.to_dict().get('ownerid')
-        log_success(f"FOUND EXISTING SELLER. OwnerID: {existing_id}")
-        return {"status": "success", "ownerid": existing_id}
+        d = doc.to_dict()
+        existing_id = d.get('ownerid')
+        return {
+            "status": "success", 
+            "ownerid": existing_id, 
+            "coins": d.get('coins', 0), 
+            "is_premium": d.get('is_premium', False)
+        }
     else:
-        log_warn("SELLER NOT FOUND. Creating NEW account...")
         new_ownerid = str(uuid.uuid4())
         doc_ref.set({
             'email': data.email,
             'ownerid': new_ownerid,
+            'coins': 400,
+            'is_premium': False,
             'created_at': firestore.SERVER_TIMESTAMP
         })
-        log_success(f"Created New Seller. OwnerID: {new_ownerid}")
-        return {"status": "success", "ownerid": new_ownerid}
+        return {"status": "success", "ownerid": new_ownerid, "coins": 400, "is_premium": False}
 
 @app.post("/apps/create")
 def create_app(data: AppCreateRequest):
-    log_info(f"Creating App '{data.app_name}' for Owner: {data.ownerid}")
+    seller_query = db.collection('sellers').where('ownerid', '==', data.ownerid).limit(1).stream()
+    seller_doc = next(seller_query, None)
+    
+    if not seller_doc: raise HTTPException(status_code=404, detail="Seller not found")
+    
+    seller_data = seller_doc.to_dict()
+    is_premium = seller_data.get('is_premium', False)
+    coins = seller_data.get('coins', 0)
+    
+    # --- OPTIMIZATION START: Server-side Count ---
+    # Instead of downloading all apps, we ask Firebase to just send the number
+    aggregate_query = db.collection('applications').where('ownerid', '==', data.ownerid).count()
+    results = aggregate_query.get()
+    current_apps_count = results[0][0].value
+    # --- OPTIMIZATION END ---
+    
+    if not is_premium:
+        if current_apps_count >= 4: raise HTTPException(status_code=400, detail="Free Tier Limit: Max 4 Apps.")
+        if coins < 100: raise HTTPException(status_code=400, detail="Insufficient Coins. Need 100 coins.")
+        seller_doc.reference.update({'coins': coins - 100})
+    
     appid = str(uuid.uuid4())
     app_secret = secrets.token_hex(16)
     
@@ -182,59 +168,82 @@ def create_app(data: AppCreateRequest):
         'ownerid': data.ownerid,
         'created_at': firestore.SERVER_TIMESTAMP
     })
-    log_success(f"App Saved! ID: {appid}")
+    
     return {"status": "success", "appid": appid, "app_secret": app_secret}
 
 @app.post("/apps/list")
 def list_apps(data: dict):
     ownerid = data.get("ownerid")
-    log_info(f"Listing apps for Owner: {ownerid}")
-    
     apps_ref = db.collection('applications').where('ownerid', '==', ownerid).stream()
     apps_list = []
     for doc in apps_ref:
         d = doc.to_dict()
-        # EDITED: Added webhook_config to response
         apps_list.append({
             "name": d['name'], 
             "appid": d['appid'], 
             "app_secret": d['app_secret'],
             "webhook_config": d.get('webhook_config', {}) 
         })
-    
-    log_success(f"Found {len(apps_list)} apps.")
     return {"status": "success", "apps": apps_list}
 
 @app.post("/apps/delete")
 def delete_app(data: AppDeleteRequest):
-    log_warn(f"Deleting App: {data.appid}")
+    # 1. Find the app
     apps = db.collection('applications').where('appid', '==', data.appid).limit(1).stream()
-    found = False
-    for a in apps:
-        a.reference.delete()
-        found = True
+    app_doc = next(apps, None)
     
-    if found:
-        # Delete users
-        users = db.collection('users').where('appid', '==', data.appid).stream()
-        for u in users: u.reference.delete()
-        log_success("App and Users Deleted.")
-        return {"status": "success"}
+    if not app_doc:
+        raise HTTPException(status_code=404, detail="App not found")
+
+    # 2. Batch Delete Users (Much faster)
+    batch = db.batch()
+    users = db.collection('users').where('appid', '==', data.appid).stream()
+    count = 0
     
-    raise HTTPException(status_code=404, detail="App not found")
+    for u in users:
+        batch.delete(u.reference)
+        count += 1
+        # Firestore batch limit is 500
+        if count >= 450:
+            batch.commit()
+            batch = db.batch()
+            count = 0
+            
+    # Delete remaining users and the app itself
+    batch.delete(app_doc.reference)
+    batch.commit()
+    
+    return {"status": "success"}
 
 @app.post("/users/create")
 def create_end_user(data: EndUserCreateRequest):
-    log_info(f"Creating User: {data.username}")
+    seller_query = db.collection('sellers').where('ownerid', '==', data.ownerid).limit(1).stream()
+    seller_doc = next(seller_query, None)
+    if not seller_doc: raise HTTPException(status_code=404, detail="Seller error")
+    seller_data = seller_doc.to_dict()
     
-    # Check duplicate
+    if not seller_data.get('is_premium', False):
+        # OPTIMIZED: Get app IDs, then assume limit based on creating new user
+        # Note: Counting TOTAL users across ALL apps efficiently requires a different DB structure
+        # For now, we will perform a slightly faster check or just check current app limit to save speed
+        # OR: To keep strict 200 limit without lag, we iterate apps but use Count()
+        
+        my_apps = [a.get('appid') for a in db.collection('applications').where('ownerid', '==', data.ownerid).stream()]
+        if not my_apps: raise HTTPException(status_code=400, detail="No apps found")
+        
+        total_users = 0
+        for aid in my_apps:
+            # Use Aggregation Count instead of downloading users
+            agg = db.collection('users').where('appid', '==', aid).count()
+            total_users += agg.get()[0][0].value
+            
+        if total_users >= 200: raise HTTPException(status_code=400, detail="Free Tier Limit: Max 200 Users Total.")
+
+    # ... rest of your code (duplicate check etc) ...
     dupes = db.collection('users').where('appid', '==', data.appid).where('username', '==', data.username).limit(1).stream()
-    for _ in dupes:
-        log_err("Username exists!")
-        raise HTTPException(status_code=400, detail="Username exists")
+    for _ in dupes: raise HTTPException(status_code=400, detail="Username exists")
 
     if data.expire_str:
-        # Parse the datetime-local HTML input format
         expires = datetime.strptime(data.expire_str, "%Y-%m-%dT%H:%M")
     elif data.days == 0: 
         expires = datetime(9999, 12, 31)
@@ -248,12 +257,10 @@ def create_end_user(data: EndUserCreateRequest):
         'expires_at': expires.isoformat(),
         'hwid': None
     })
-    log_success("User Created.")
     return {"status": "success"}
 
 @app.post("/users/list")
 def list_users(data: UserListRequest):
-    log_info(f"Fetching users for App: {data.appid}")
     users = db.collection('users').where('appid', '==', data.appid).stream()
     u_list = [{"id": d.id, **d.to_dict()} for d in users]
     return {"status": "success", "users": u_list}
@@ -265,70 +272,44 @@ def delete_user(data: UserDeleteRequest):
 
 @app.post("/api/1.0/user_login")
 async def user_login(data: ApiLoginRequest, request: Request, bg_tasks: BackgroundTasks):
-    log_info(f"Login Attempt: {data.username} (HWID: {data.hwid})")
-    
-    # 1. Find App
     apps = db.collection('applications').where('ownerid', '==', data.ownerid).where('app_secret', '==', data.app_secret).limit(1).stream()
     app_doc_ref = next(apps, None)
-    
-    if not app_doc_ref:
-        return {"success": False, "message": "Invalid application details."}
-
+    if not app_doc_ref: return {"success": False, "message": "Invalid application details."}
     app_data = app_doc_ref.to_dict()
 
-    # 2. Find User
     users = db.collection('users').where('username', '==', data.username).where('appid', '==', app_data['appid']).limit(1).stream()
     user_doc = next(users, None)
-    
-    if not user_doc:
-        return {"success": False, "message": "Invalid credentials."}
+    if not user_doc: return {"success": False, "message": "Invalid credentials."}
     
     u_data = user_doc.to_dict()
-    if u_data['password'] != data.password:
-        return {"success": False, "message": "Invalid credentials."}
+    if u_data['password'] != data.password: return {"success": False, "message": "Invalid credentials."}
         
-    # 3. HWID Lock
     if u_data.get('hwid') is None:
         user_doc.reference.update({'hwid': data.hwid})
         u_data['hwid'] = data.hwid 
     elif u_data['hwid'] != data.hwid:
         return {"success": False, "message": "HWID mismatch."}
     
-    # --- WEBHOOK TRIGGER ---
     wh_config = app_data.get('webhook_config', {})
-    print(f"DEBUG: Config Enabled: {wh_config.get('enabled')}, URL: {wh_config.get('url')}")
-
     if wh_config.get('enabled') and wh_config.get('url'):
         x_forwarded_for = request.headers.get("x-forwarded-for")
         client_ip = x_forwarded_for.split(',')[0] if x_forwarded_for else request.client.host
-        
         bg_tasks.add_task(send_discord_webhook, wh_config['url'], u_data, wh_config, app_data['name'], client_ip)
-    else:
-        # ADD THIS LOG TO SEE IF IT IS SKIPPING
-        log_warn(f"Webhook SKIPPED for {data.username}. Enabled: {wh_config.get('enabled')}, URL present: {bool(wh_config.get('url'))}")
-    # -----------------------
 
     return {"success": True, "message": "Login successful.", "info": {"expires": u_data['expires_at']}}
 
 @app.post("/seller/delete")
 def delete_seller(data: SellerDeleteRequest):
-    log_warn(f"DELETING SELLER: {data.ownerid}")
     db.collection('sellers').where('ownerid', '==', data.ownerid).limit(1).get()[0].reference.delete()
-    
-    # Clean apps
     apps = db.collection('applications').where('ownerid', '==', data.ownerid).stream()
     for a in apps:
-        # Clean users
         users = db.collection('users').where('appid', '==', a.get('appid')).stream()
         for u in users: u.reference.delete()
         a.reference.delete()
-        
     return {"status": "success"}
 
 @app.post("/apps/webhook/save")
 def save_webhook(data: WebhookSaveRequest):
-    log_info(f"Updating Webhook for App: {data.appid}")
-    
     apps = db.collection('applications').where('appid', '==', data.appid).limit(1).stream()
     found = False
     for a in apps:
@@ -337,21 +318,46 @@ def save_webhook(data: WebhookSaveRequest):
                 'url': data.webhook_url,
                 'enabled': data.enabled,
                 'show_hwid': data.show_hwid,
-                'show_ip': data.show_ip,
+                # 'show_ip': data.show_ip,  <-- REMOVED
                 'show_app': data.show_app,
                 'show_expiry': data.show_expiry
             }
         })
         found = True
-    
     if found: return {"status": "success"}
     raise HTTPException(status_code=404, detail="App not found")
 
+# --- ADMIN ENDPOINTS ---
 
+@app.post("/admin/search_seller")
+def admin_search(data: AdminSearchRequest):
+    seller_query = db.collection('sellers').where('ownerid', '==', data.ownerid).limit(1).stream()
+    seller = next(seller_query, None)
+    
+    if seller:
+        d = seller.to_dict()
+        return {
+            "status": "success",
+            "found": True,
+            "data": {
+                "email": d.get('email'),
+                "ownerid": d.get('ownerid'),
+                "coins": d.get('coins', 0),
+                "is_premium": d.get('is_premium', False)
+            }
+        }
+    return {"status": "success", "found": False}
 
-
-
-
-
-
-
+@app.post("/admin/update_seller")
+def admin_update(data: AdminUpdateRequest):
+    seller_query = db.collection('sellers').where('ownerid', '==', data.ownerid).limit(1).stream()
+    seller = next(seller_query, None)
+    
+    if seller:
+        seller.reference.update({
+            "is_premium": data.is_premium,
+            "coins": data.coins
+        })
+        return {"status": "success"}
+    
+    raise HTTPException(status_code=404, detail="Seller not found")
