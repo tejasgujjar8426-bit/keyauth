@@ -23,7 +23,7 @@ def log_err(msg): print(f"\033[91m[ERROR]\033[0m {msg}")
 # --- FIREBASE SETUP ---
 try:
     # 1. Try to get credentials from Environment Variable (Render)
-    env_creds = os.environ.get("FIREBASE_CREDENTIALS")
+    env_creds = os.environ.get("SERVICE_ACCOUNT_JSON")
     
     if env_creds:
         cred_dict = json.loads(env_creds)
@@ -361,3 +361,4 @@ def admin_update(data: AdminUpdateRequest):
         return {"status": "success"}
     
     raise HTTPException(status_code=404, detail="Seller not found")
+
