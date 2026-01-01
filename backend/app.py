@@ -362,4 +362,26 @@ def admin_update(data: AdminUpdateRequest):
     
     raise HTTPException(status_code=404, detail="Seller not found")
 
+@app.post("/admin/stats")
+def get_admin_stats():
+    # 1. Count Total Sellers
+    sellers_agg = db.collection('sellers').count()
+    sellers_count = sellers_agg.get()[0][0].value
+
+    # 2. Count Total End Users
+    users_agg = db.collection('users').count()
+    users_count = users_agg.get()[0][0].value
+
+    # 3. Count Premium Sellers
+    prem_agg = db.collection('sellers').where('is_premium', '==', True).count()
+    prem_count = prem_agg.get()[0][0].value
+
+    return {
+        "status": "success",
+        "sellers": sellers_count,
+        "users": users_count,
+        "premium": prem_count
+    }
+
+
 
