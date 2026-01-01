@@ -362,26 +362,32 @@ def admin_update(data: AdminUpdateRequest):
     
     raise HTTPException(status_code=404, detail="Seller not found")
 
-@app.post("/admin/stats")
-def get_admin_stats():
-    # 1. Count Total Sellers
-    sellers_agg = db.collection('sellers').count()
-    sellers_count = sellers_agg.get()[0][0].value
+@app.post("/admin/search_seller")
+def admin_search(data: AdminSearchRequest):
+    seller_query = db.collection('sellers').where('ownerid', '==', data.ownerid).limit(1).stream()
+    seller = next(seller_query, None)
+    
+    if seller:
+        d = seller.to_dict()
+        
+        # --- NEW: Count Apps for this seller ---
+        app_agg = db.collection('applications').where('ownerid', '==', data.ownerid).count()
+        app_count = app_agg.get()[0][0].value
+        # ---------------------------------------
 
-    # 2. Count Total End Users
-    users_agg = db.collection('users').count()
-    users_count = users_agg.get()[0][0].value
+        return {
+            "status": "success",
+            "found": True,
+            "data": {
+                "email": d.get('email'),
+                "ownerid": d.get('ownerid'),
+                "coins": d.get('coins', 0),
+                "is_premium": d.get('is_premium', False),
+                "app_count": app_count  # Sending this to frontend
+            }
+        }
+    return {"status": "success", "found": False}
 
-    # 3. Count Premium Sellers
-    prem_agg = db.collection('sellers').where('is_premium', '==', True).count()
-    prem_count = prem_agg.get()[0][0].value
-
-    return {
-        "status": "success",
-        "sellers": sellers_count,
-        "users": users_count,
-        "premium": prem_count
-    }
 
 
 
