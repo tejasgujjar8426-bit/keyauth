@@ -154,7 +154,7 @@ def create_app(data: AppCreateRequest):
     # --- OPTIMIZATION END ---
     
     if not is_premium:
-        if current_apps_count >= 4: raise HTTPException(status_code=400, detail="Free Tier Limit: Max 4 Apps.")
+        if current_apps_count >= 2: raise HTTPException(status_code=400, detail="Free Tier Limit: Max 2 Apps.")
         if coins < 100: raise HTTPException(status_code=400, detail="Insufficient Coins. Need 100 coins.")
         seller_doc.reference.update({'coins': coins - 100})
     
@@ -237,7 +237,7 @@ def create_end_user(data: EndUserCreateRequest):
             agg = db.collection('users').where('appid', '==', aid).count()
             total_users += agg.get()[0][0].value
             
-        if total_users >= 200: raise HTTPException(status_code=400, detail="Free Tier Limit: Max 200 Users Total.")
+        if total_users >= 40: raise HTTPException(status_code=400, detail="Free Tier Limit: Max 40 Users Total.")
 
     # ... rest of your code (duplicate check etc) ...
     dupes = db.collection('users').where('appid', '==', data.appid).where('username', '==', data.username).limit(1).stream()
@@ -361,4 +361,5 @@ def admin_update(data: AdminUpdateRequest):
         return {"status": "success"}
     
     raise HTTPException(status_code=404, detail="Seller not found")
+
 
