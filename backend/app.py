@@ -377,11 +377,16 @@ def get_admin_stats():
     prem_agg = db.collection('sellers').where('is_premium', '==', True).count()
     prem_count = prem_agg.get()[0][0].value
 
+    # --- NEW: Count Total Apps ---
+    apps_agg = db.collection('applications').count()
+    apps_count = apps_agg.get()[0][0].value
+
     return {
         "status": "success",
         "sellers": sellers_count,
         "users": users_count,
-        "premium": prem_count
+        "premium": prem_count,
+        "apps": apps_count  # <--- Added this to response
     }
 
 # --- 2. FOR THE SEARCH TAB (Manage Specific Seller) ---
@@ -409,6 +414,7 @@ def admin_search(data: AdminSearchRequest):
             }
         }
     return {"status": "success", "found": False}
+
 
 
 
