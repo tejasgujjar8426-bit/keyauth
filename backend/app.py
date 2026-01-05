@@ -300,6 +300,7 @@ async def user_login(data: ApiLoginRequest, request: Request, bg_tasks: Backgrou
     else:
         # Unlocked Logic: Allow anyone, but update DB so admin sees the current user's HWID
         user_doc.reference.update({'hwid': data.hwid})
+        u_data['hwid'] = data.hwid
     
     # 3. Webhook (Unchanged)
     wh_config = app_data.get('webhook_config', {})
@@ -463,3 +464,4 @@ def user_action(data: UserUpdateAction):
         return {"status": "success"}
     
     return {"status": "no_change"}
+
