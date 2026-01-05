@@ -272,24 +272,36 @@ def delete_user(data: UserDeleteRequest):
 
 @app.post("/api/1.0/user_login")
 async def user_login(data: ApiLoginRequest, request: Request, bg_tasks: BackgroundTasks):
+    # 1. Fetch App
     apps = db.collection('applications').where('ownerid', '==', data.ownerid).where('app_secret', '==', data.app_secret).limit(1).stream()
     app_doc_ref = next(apps, None)
     if not app_doc_ref: return {"success": False, "message": "Invalid application details."}
     app_data = app_doc_ref.to_dict()
 
+    # 2. Fetch User
     users = db.collection('users').where('username', '==', data.username).where('appid', '==', app_data['appid']).limit(1).stream()
     user_doc = next(users, None)
     if not user_doc: return {"success": False, "message": "Invalid credentials."}
     
     u_data = user_doc.to_dict()
     if u_data['password'] != data.password: return {"success": False, "message": "Invalid credentials."}
-        
-    if u_data.get('hwid') is None:
-        user_doc.reference.update({'hwid': data.hwid})
-        u_data['hwid'] = data.hwid 
-    elif u_data['hwid'] != data.hwid:
-        return {"success": False, "message": "HWID mismatch."}
     
+    # --- NEW LOGIC: HWID LOCK ---
+    # Default is TRUE (Locked) if the field doesn't exist
+    is_hwid_locked = u_data.get('hwid_locked', True)
+
+    if is_hwid_locked:
+        # Standard Strict Logic
+        if u_data.get('hwid') is None:
+            user_doc.reference.update({'hwid': data.hwid})
+            u_data['hwid'] = data.hwid 
+        elif u_data['hwid'] != data.hwid:
+            return {"success": False, "message": "HWID mismatch."}
+    else:
+        # Unlocked Logic: Allow anyone, but update DB so admin sees the current user's HWID
+        user_doc.reference.update({'hwid': data.hwid})
+    
+    # 3. Webhook (Unchanged)
     wh_config = app_data.get('webhook_config', {})
     if wh_config.get('enabled') and wh_config.get('url'):
         x_forwarded_for = request.headers.get("x-forwarded-for")
@@ -417,5 +429,37 @@ def admin_search(data: AdminSearchRequest):
 
 
 
+# --- ADD THIS MODEL ---
+class UserUpdateAction(BaseModel):
+    user_id: str
+    action: str # "reset_hwid", "set_expiry", "toggle_lock"
+    expire_str: str = None # For full date customization
+    lock_state: bool = False
 
+# --- ADD THIS ENDPOINT ---
+@app.post("/users/action")
+def user_action(data: UserUpdateAction):
+    doc_ref = db.collection('users').document(data.user_id)
+    doc = doc_ref.get()
+    
+    if not doc.exists: 
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    updates = {}
 
+    if data.action == "reset_hwid":
+        updates['hwid'] = None
+    
+    elif data.action == "toggle_lock":
+        updates['hwid_locked'] = data.lock_state
+
+    elif data.action == "set_expiry":
+        # Save the exact date string provided by the frontend
+        if data.expire_str:
+            updates['expires_at'] = data.expire_str
+
+    if updates:
+        doc_ref.update(updates)
+        return {"status": "success"}
+    
+    return {"status": "no_change"}
