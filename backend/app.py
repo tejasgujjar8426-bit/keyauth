@@ -466,8 +466,10 @@ def user_action(data: UserUpdateAction):
     return {"status": "no_change"}
 
 # --- UPTIME ROBOT / HEALTH CHECK ENDPOINT ---
-@app.get("/")
+# This explicitly handles "HEAD" requests to fix the 405 error
+@app.api_route("/", methods=["GET", "HEAD"])
 def health_check():
     return {"status": "active", "timestamp": datetime.utcnow().isoformat()}
+
 
 
