@@ -49,6 +49,11 @@ except Exception as e:
     log_err(f"Failed to connect to Firebase: {e}")
     sys.exit(1)
 
+# --- UPTIME ROBOT / HEALTH CHECK ENDPOINT ---
+@app.get("/")
+def health_check():
+    return {"status": "active", "timestamp": datetime.utcnow().isoformat()}
+    
 app = FastAPI()
 
 app.add_middleware(
@@ -464,4 +469,5 @@ def user_action(data: UserUpdateAction):
         return {"status": "success"}
     
     return {"status": "no_change"}
+
 
