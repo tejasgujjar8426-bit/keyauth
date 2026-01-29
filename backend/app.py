@@ -281,7 +281,22 @@ async def user_login(data: ApiLoginRequest, request: Request, bg_tasks: Backgrou
     # 2. Fetch User
     users = db.collection('users').where('username', '==', data.username).where('appid', '==', app_data['appid']).limit(1).stream()
     user_doc = next(users, None)
-    if not user_doc: return {"success": False, "message": "Invalid credentials."}
+    if user_doc is None: return {"success": False, "message": "Invalid credentials."}
+    
+    u_data = user_doc.to_dict()
+    if u_data['password'] != data.password: return {"success": False, "message": "Invalid credentials."}
+
+    # --- ADD THIS EXPIRY CHECK HERE ---
+    try:
+        # Convert the stored ISO string back to a datetime object
+        expiry_date = datetime.fromisoformat(u_data['expires_at'])
+        
+        # Compare with current UTC time
+        if datetime.utcnow() > expiry_date:
+            return {"success": False, "message": "Your subscription has expired."}
+    except Exception as e:
+        log_err(f"Expiry check error: {e}")
+        return {"success": False, "message": "Error verifying subscription status."}
     
     u_data = user_doc.to_dict()
     if u_data['password'] != data.password: return {"success": False, "message": "Invalid credentials."}
@@ -470,6 +485,7 @@ def user_action(data: UserUpdateAction):
 @app.api_route("/", methods=["GET", "HEAD"])
 def health_check():
     return {"status": "active", "timestamp": datetime.utcnow().isoformat()}
+
 
 
 
