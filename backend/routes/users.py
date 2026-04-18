@@ -5,6 +5,13 @@ from schemas import EndUserCreateRequest, UserListRequest, UserDeleteRequest, Us
 
 router = APIRouter(tags=["Users"])
 
+def get_secure_count(agg):
+    try:
+        res = agg.get()
+        if isinstance(res[0], list): return res[0][0].value
+        return res[0].value
+    except Exception: return 0
+
 @router.post("/users/create")
 def create_end_user(data: EndUserCreateRequest):
     seller_query = db.collection('sellers').where('ownerid', '==', data.ownerid).limit(1).stream()
@@ -21,12 +28,7 @@ def create_end_user(data: EndUserCreateRequest):
     
     if group != 2:
         # Check specific app limit (24 users per app as requested)
-        try:
-            app_users_agg = db.collection('users').where('appid', '==', data.appid).count()
-            current_app_users = app_users_agg.get()[0].value
-        except Exception as e:
-            print(f"Aggregation Error: {e}")
-            current_app_users = 0
+        current_app_users = get_secure_count(db.collection('users').where('appid', '==', data.appid).count())
             
         if current_app_users >= 24:
             plan_name = "Silver Developer" if group == 1 else "Free Developer"
