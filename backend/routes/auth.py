@@ -14,12 +14,19 @@ def sync_seller(data: SellerSyncRequest):
     if doc.exists:
         d = doc.to_dict()
         existing_id = d.get('ownerid')
+        
+        # Auto-migration logic: if group is missing, calculate and save it
+        group = d.get('seller_group')
+        if group is None:
+            group = 2 if d.get('is_premium') else 0
+            doc_ref.update({'seller_group': group})
+            
         return {
             "status": "success", 
             "ownerid": existing_id, 
             "coins": d.get('coins', 0), 
             "is_premium": d.get('is_premium', False),
-            "seller_group": d.get('seller_group', 2 if d.get('is_premium') else 0)
+            "seller_group": group
         }
     else:
         new_ownerid = str(uuid.uuid4())
@@ -46,3 +53,4 @@ def delete_seller(data: SellerDeleteRequest):
         for u in users: u.reference.delete()
         a.reference.delete()
     return {"status": "success"}
+
