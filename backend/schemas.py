@@ -19,7 +19,7 @@ class WebhookSaveRequest(BaseModel):
     show_expiry: bool
 
 class AdminSearchRequest(BaseModel): ownerid: str
-class AdminUpdateRequest(BaseModel): ownerid: str; is_premium: bool; coins: int
+class AdminUpdateRequest(BaseModel): ownerid: str; is_premium: bool; coins: int; seller_group: int = 0
 
 class AdminPublishUpdate(BaseModel):
     message: str
