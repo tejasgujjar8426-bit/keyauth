@@ -43,7 +43,7 @@ def admin_search(data: AdminSearchRequest):
         d = seller.to_dict()
         
         app_agg = db.collection('applications').where('ownerid', '==', data.ownerid).count()
-        app_count = app_agg.get()[0][0].value
+        app_count = app_agg.get()[0].value
 
         return {
             "status": "success",
