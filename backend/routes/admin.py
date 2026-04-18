@@ -15,8 +15,10 @@ def get_admin_stats():
     users_agg = db.collection('users').count()
     users_count = users_agg.get()[0][0].value
 
-    # Count Premium Sellers
-    prem_agg = db.collection('sellers').where('is_premium', '==', True).count()
+    # Count Groups
+    plus_agg = db.collection('sellers').where('seller_group', '==', 1).count()
+    prem_agg = db.collection('sellers').where('seller_group', '==', 2).count()
+    plus_count = plus_agg.get()[0][0].value
     prem_count = prem_agg.get()[0][0].value
 
     # --- NEW: Count Total Apps ---
@@ -28,6 +30,7 @@ def get_admin_stats():
         "sellers": sellers_count,
         "users": users_count,
         "premium": prem_count,
+        "plus": plus_count,
         "apps": apps_count 
     }
 
@@ -50,6 +53,7 @@ def admin_search(data: AdminSearchRequest):
                 "ownerid": d.get('ownerid'),
                 "coins": d.get('coins', 0),
                 "is_premium": d.get('is_premium', False),
+                "seller_group": d.get('seller_group', 2 if d.get('is_premium') else 0),
                 "app_count": app_count 
             }
         }
@@ -62,7 +66,8 @@ def admin_update(data: AdminUpdateRequest):
     
     if seller:
         seller.reference.update({
-            "is_premium": data.is_premium,
+            "is_premium": data.seller_group == 2,
+            "seller_group": data.seller_group,
             "coins": data.coins
         })
         return {"status": "success"}
