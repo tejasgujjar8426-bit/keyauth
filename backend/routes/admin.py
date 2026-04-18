@@ -9,21 +9,21 @@ router = APIRouter(tags=["Admin"])
 def get_admin_stats():
     # Count Total Sellers
     sellers_agg = db.collection('sellers').count()
-    sellers_count = sellers_agg.get()[0][0].value
+    sellers_count = sellers_agg.get()[0].value
 
     # Count Total End Users
     users_agg = db.collection('users').count()
-    users_count = users_agg.get()[0][0].value
+    users_count = users_agg.get()[0].value
 
     # Count Groups
     plus_agg = db.collection('sellers').where('seller_group', '==', 1).count()
     prem_agg = db.collection('sellers').where('seller_group', '==', 2).count()
-    plus_count = plus_agg.get()[0][0].value
-    prem_count = prem_agg.get()[0][0].value
+    plus_count = plus_agg.get()[0].value
+    prem_count = prem_agg.get()[0].value
 
     # --- NEW: Count Total Apps ---
     apps_agg = db.collection('applications').count()
-    apps_count = apps_agg.get()[0][0].value
+    apps_count = apps_agg.get()[0].value
 
     return {
         "status": "success",
