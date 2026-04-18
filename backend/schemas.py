@@ -21,6 +21,10 @@ class WebhookSaveRequest(BaseModel):
 class AdminSearchRequest(BaseModel): ownerid: str
 class AdminUpdateRequest(BaseModel): ownerid: str; is_premium: bool; coins: int
 
+class AdminPublishUpdate(BaseModel):
+    message: str
+    secret_key: str
+
 class UserUpdateAction(BaseModel):
     user_id: str
     action: str # "reset_hwid", "set_expiry", "toggle_lock"
