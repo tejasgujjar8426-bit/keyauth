@@ -7,6 +7,13 @@ from schemas import AppCreateRequest, AppDeleteRequest, WebhookSaveRequest
 
 router = APIRouter(tags=["Apps"])
 
+def get_secure_count(agg):
+    try:
+        res = agg.get()
+        if isinstance(res[0], list): return res[0][0].value
+        return res[0].value
+    except Exception: return 0
+
 @router.post("/apps/create")
 def create_app(data: AppCreateRequest):
     seller_query = db.collection('sellers').where('ownerid', '==', data.ownerid).limit(1).stream()
@@ -23,12 +30,7 @@ def create_app(data: AppCreateRequest):
     coins = seller_data.get('coins', 0)
     
     # 1. Check Apps Limit
-    try:
-        aggregate_query = db.collection('applications').where('ownerid', '==', data.ownerid).count()
-        current_apps_count = aggregate_query.get()[0].value
-    except Exception as e:
-        print(f"Aggregation Error: {e}")
-        current_apps_count = 0 # Fallback safety
+    current_apps_count = get_secure_count(db.collection('applications').where('ownerid', '==', data.ownerid).count())
 
     if group == 0 and current_apps_count >= 2:
         raise HTTPException(status_code=400, detail="Free Developer Limit: Max 2 Apps. Upgrade to Silver or Gold for more!")
