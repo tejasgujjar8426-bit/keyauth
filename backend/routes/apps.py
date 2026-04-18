@@ -21,19 +21,19 @@ def create_app(data: AppCreateRequest):
     
     # 1. Check Apps Limit
     aggregate_query = db.collection('applications').where('ownerid', '==', data.ownerid).count()
-    current_apps_count = aggregate_query.get()[0][0].value
+    current_apps_count = aggregate_query.get()[0].value
 
     if group == 0 and current_apps_count >= 2:
-        raise HTTPException(status_code=400, detail="Default Tier Limit: Max 2 Apps. Upgrade to Plus or Premium!")
+        raise HTTPException(status_code=400, detail="Free Developer Limit: Max 2 Apps. Upgrade to Silver or Gold for more!")
     elif group == 1 and current_apps_count >= 10:
-        raise HTTPException(status_code=400, detail="Seller Plus Limit: Max 10 Apps. Upgrade to Premium!")
+        raise HTTPException(status_code=400, detail="Silver Developer Limit: Max 10 Apps. Upgrade to Gold for unlimited apps!")
 
     # 2. Handle Coin Deduction
     if group == 0:
-        if coins < 100: raise HTTPException(status_code=400, detail="Default Tier: Need 100 coins to create an app.")
+        if coins < 100: raise HTTPException(status_code=400, detail="Free Developer: Need 100 coins to create an app.")
         seller_doc.reference.update({'coins': coins - 100})
     elif group == 1:
-        if coins < 50: raise HTTPException(status_code=400, detail="Seller Plus: Need 50 coins to create an app.")
+        if coins < 50: raise HTTPException(status_code=400, detail="Silver Developer: Need 50 coins to create an app.")
         seller_doc.reference.update({'coins': coins - 50})
     # Group 2 (Premium) is free and unlimited
     
