@@ -18,7 +18,8 @@ def sync_seller(data: SellerSyncRequest):
             "status": "success", 
             "ownerid": existing_id, 
             "coins": d.get('coins', 0), 
-            "is_premium": d.get('is_premium', False)
+            "is_premium": d.get('is_premium', False),
+            "seller_group": d.get('seller_group', 2 if d.get('is_premium') else 0)
         }
     else:
         new_ownerid = str(uuid.uuid4())
@@ -29,7 +30,7 @@ def sync_seller(data: SellerSyncRequest):
             'is_premium': False,
             'created_at': firestore.SERVER_TIMESTAMP
         })
-        return {"status": "success", "ownerid": new_ownerid, "coins": 400, "is_premium": False}
+        return {"status": "success", "ownerid": new_ownerid, "coins": 400, "is_premium": False, "seller_group": 0}
 
 @router.post("/seller/delete")
 def delete_seller(data: SellerDeleteRequest):
