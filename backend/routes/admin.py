@@ -5,25 +5,29 @@ from datetime import datetime
 
 router = APIRouter(tags=["Admin"])
 
+def get_secure_count(agg):
+    try:
+        res = agg.get()
+        # Handle both [AggregationResult] and [[AggregationResult]] patterns
+        if isinstance(res[0], list):
+            return res[0][0].value
+        return res[0].value
+    except Exception as e:
+        print(f"Count Error: {e}")
+        return 0
+
 @router.post("/admin/stats")
 def get_admin_stats():
     # Count Total Sellers
-    sellers_agg = db.collection('sellers').count()
-    sellers_count = sellers_agg.get()[0].value
-
-    # Count Total End Users
-    users_agg = db.collection('users').count()
-    users_count = users_agg.get()[0].value
+    sellers_count = get_secure_count(db.collection('sellers').count())
+    users_count = get_secure_count(db.collection('users').count())
 
     # Count Groups
-    silver_agg = db.collection('sellers').where('seller_group', '==', 1).count()
-    gold_agg = db.collection('sellers').where('seller_group', '==', 2).count()
-    silver_count = silver_agg.get()[0].value
-    gold_count = gold_agg.get()[0].value
+    silver_count = get_secure_count(db.collection('sellers').where('seller_group', '==', 1).count())
+    gold_count = get_secure_count(db.collection('sellers').where('seller_group', '==', 2).count())
 
     # --- NEW: Count Total Apps ---
-    apps_agg = db.collection('applications').count()
-    apps_count = apps_agg.get()[0].value
+    apps_count = get_secure_count(db.collection('applications').count())
 
     return {
         "status": "success",
@@ -39,24 +43,27 @@ def admin_search(data: AdminSearchRequest):
     seller_query = db.collection('sellers').where('ownerid', '==', data.ownerid).limit(1).stream()
     seller = next(seller_query, None)
     
-    if seller:
-        d = seller.to_dict()
-        
-        app_agg = db.collection('applications').where('ownerid', '==', data.ownerid).count()
-        app_count = app_agg.get()[0].value
+    # Fallback for manual IDs
+    if not seller:
+        seller = db.collection('sellers').document(data.ownerid).get()
+        if not seller.exists:
+            return {"status": "success", "found": False}
+    
+    d = seller.to_dict()
+    app_agg = db.collection('applications').where('ownerid', '==', d.get('ownerid')).count()
+    app_count = get_secure_count(app_agg)
 
-        return {
-            "status": "success",
-            "found": True,
-            "data": {
-                "email": d.get('email'),
-                "ownerid": d.get('ownerid'),
-                "coins": d.get('coins', 0),
-                "seller_group": d.get('seller_group', 0),
-                "app_count": app_count 
-            }
+    return {
+        "status": "success",
+        "found": True,
+        "data": {
+            "email": d.get('email'),
+            "ownerid": d.get('ownerid'),
+            "coins": d.get('coins', 0),
+            "seller_group": d.get('seller_group', 0),
+            "app_count": app_count 
         }
-    return {"status": "success", "found": False}
+    }
 
 @router.post("/admin/update_seller")
 def admin_update(data: AdminUpdateRequest):
