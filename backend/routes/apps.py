@@ -15,20 +15,27 @@ def create_app(data: AppCreateRequest):
     if not seller_doc: raise HTTPException(status_code=404, detail="Seller not found")
     
     seller_data = seller_doc.to_dict()
-    is_premium = seller_data.get('is_premium', False)
+    # 0 = Default, 1 = Plus, 2 = Premium
+    group = seller_data.get('seller_group', 2 if seller_data.get('is_premium') else 0)
     coins = seller_data.get('coins', 0)
     
-    # --- OPTIMIZATION START: Server-side Count ---
-    # Instead of downloading all apps, we ask Firebase to just send the number
+    # 1. Check Apps Limit
     aggregate_query = db.collection('applications').where('ownerid', '==', data.ownerid).count()
-    results = aggregate_query.get()
-    current_apps_count = results[0][0].value
-    # --- OPTIMIZATION END ---
-    
-    if not is_premium:
-        if current_apps_count >= 2: raise HTTPException(status_code=400, detail="Free Tier Limit: Max 2 Apps.")
-        if coins < 100: raise HTTPException(status_code=400, detail="Insufficient Coins. Need 100 coins.")
+    current_apps_count = aggregate_query.get()[0][0].value
+
+    if group == 0 and current_apps_count >= 2:
+        raise HTTPException(status_code=400, detail="Default Tier Limit: Max 2 Apps. Upgrade to Plus or Premium!")
+    elif group == 1 and current_apps_count >= 10:
+        raise HTTPException(status_code=400, detail="Seller Plus Limit: Max 10 Apps. Upgrade to Premium!")
+
+    # 2. Handle Coin Deduction
+    if group == 0:
+        if coins < 100: raise HTTPException(status_code=400, detail="Default Tier: Need 100 coins to create an app.")
         seller_doc.reference.update({'coins': coins - 100})
+    elif group == 1:
+        if coins < 50: raise HTTPException(status_code=400, detail="Seller Plus: Need 50 coins to create an app.")
+        seller_doc.reference.update({'coins': coins - 50})
+    # Group 2 (Premium) is free and unlimited
     
     appid = str(uuid.uuid4())
     app_secret = secrets.token_hex(16)
