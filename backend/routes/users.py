@@ -17,11 +17,11 @@ def create_end_user(data: EndUserCreateRequest):
     if group != 2:
         # Check specific app limit (24 users per app as requested)
         app_users_agg = db.collection('users').where('appid', '==', data.appid).count()
-        current_app_users = app_users_agg.get()[0][0].value
+        current_app_users = app_users_agg.get()[0].value
         
         if current_app_users >= 24:
-            plan_name = "Silver" if group == 1 else "Bronze"
-            raise HTTPException(status_code=400, detail=f"{plan_name} Tier Limit: Max 24 users per app. Upgrade to Gold for unlimited users!")
+            plan_name = "Silver Developer" if group == 1 else "Free Developer"
+            raise HTTPException(status_code=400, detail=f"{plan_name} Limit: Max 24 users per app. Upgrade to Gold for unlimited users!")
 
     # ... rest of your code (duplicate check etc) ...
     dupes = db.collection('users').where('appid', '==', data.appid).where('username', '==', data.username).limit(1).stream()
