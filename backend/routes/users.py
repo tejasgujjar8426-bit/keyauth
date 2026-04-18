@@ -11,23 +11,17 @@ def create_end_user(data: EndUserCreateRequest):
     seller_doc = next(seller_query, None)
     if not seller_doc: raise HTTPException(status_code=404, detail="Seller error")
     seller_data = seller_doc.to_dict()
+    # 0 = Default, 1 = Plus, 2 = Premium
+    group = seller_data.get('seller_group', 2 if seller_data.get('is_premium') else 0)
     
-    if not seller_data.get('is_premium', False):
-        # OPTIMIZED: Get app IDs, then assume limit based on creating new user
-        # Note: Counting TOTAL users across ALL apps efficiently requires a different DB structure
-        # For now, we will perform a slightly faster check or just check current app limit to save speed
-        # OR: To keep strict 200 limit without lag, we iterate apps but use Count()
+    if group != 2:
+        # Check specific app limit (24 users per app as requested)
+        app_users_agg = db.collection('users').where('appid', '==', data.appid).count()
+        current_app_users = app_users_agg.get()[0][0].value
         
-        my_apps = [a.get('appid') for a in db.collection('applications').where('ownerid', '==', data.ownerid).stream()]
-        if not my_apps: raise HTTPException(status_code=400, detail="No apps found")
-        
-        total_users = 0
-        for aid in my_apps:
-            # Use Aggregation Count instead of downloading users
-            agg = db.collection('users').where('appid', '==', aid).count()
-            total_users += agg.get()[0][0].value
-            
-        if total_users >= 40: raise HTTPException(status_code=400, detail="Free Tier Limit: Max 40 Users Total.")
+        if current_app_users >= 24:
+            plan_name = "Seller Plus" if group == 1 else "Default"
+            raise HTTPException(status_code=400, detail=f"{plan_name} Limit: Max 24 users per app. Upgrade to Premium!")
 
     # ... rest of your code (duplicate check etc) ...
     dupes = db.collection('users').where('appid', '==', data.appid).where('username', '==', data.username).limit(1).stream()
