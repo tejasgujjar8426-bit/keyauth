@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from database import db
-from schemas import AdminSearchRequest, AdminUpdateRequest
+from schemas import AdminSearchRequest, AdminUpdateRequest, AdminPublishUpdate
+from datetime import datetime
 
 router = APIRouter(tags=["Admin"])
 
@@ -27,7 +28,7 @@ def get_admin_stats():
         "sellers": sellers_count,
         "users": users_count,
         "premium": prem_count,
-        "apps": apps_count  # <--- Added this to response
+        "apps": apps_count 
     }
 
 @router.post("/admin/search_seller")
@@ -38,7 +39,6 @@ def admin_search(data: AdminSearchRequest):
     if seller:
         d = seller.to_dict()
         
-        # Count Apps for this specific seller
         app_agg = db.collection('applications').where('ownerid', '==', data.ownerid).count()
         app_count = app_agg.get()[0][0].value
 
@@ -68,3 +68,25 @@ def admin_update(data: AdminUpdateRequest):
         return {"status": "success"}
     
     raise HTTPException(status_code=404, detail="Seller not found")
+
+@router.post("/admin/publish_update")
+def publish_update(data: AdminPublishUpdate):
+    # Security check - ideally this would be in .env
+    if data.secret_key != "lynx_admin_secret":
+        raise HTTPException(status_code=403, detail="Unauthorized")
+    
+    update_ref = db.collection('updates').document()
+    update_ref.set({
+        "message": data.message,
+        "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "timestamp": datetime.now().timestamp()
+    })
+    return {"status": "success", "message": "Update published!"}
+
+@router.get("/public/updates")
+def get_updates():
+    updates_query = db.collection('updates').order_by('timestamp', direction='DESCENDING').limit(10).stream()
+    updates = []
+    for u in updates_query:
+        updates.append(u.to_dict())
+    return {"status": "success", "updates": updates}
