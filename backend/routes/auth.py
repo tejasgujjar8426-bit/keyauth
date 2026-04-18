@@ -34,7 +34,12 @@ def sync_seller(data: SellerSyncRequest):
 
 @router.post("/seller/delete")
 def delete_seller(data: SellerDeleteRequest):
-    db.collection('sellers').where('ownerid', '==', data.ownerid).limit(1).get()[0].reference.delete()
+    seller_query = db.collection('sellers').where('ownerid', '==', data.ownerid).limit(1).get()
+    if not seller_query:
+        return {"status": "error", "message": "Seller not found"}
+    
+    seller_query[0].reference.delete()
+
     apps = db.collection('applications').where('ownerid', '==', data.ownerid).stream()
     for a in apps:
         users = db.collection('users').where('appid', '==', a.get('appid')).stream()
