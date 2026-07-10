@@ -17,7 +17,7 @@ def create_end_user(data: EndUserCreateRequest):
     seller_query = db.collection('sellers').where('ownerid', '==', data.ownerid).limit(1).stream()
     seller_doc = next(seller_query, None)
     
-    # Fallback for manual IDs
+
     if not seller_doc:
         seller_doc = db.collection('sellers').document(data.ownerid).get()
         if not seller_doc.exists:
@@ -27,14 +27,13 @@ def create_end_user(data: EndUserCreateRequest):
     group = seller_data.get('seller_group', 0)
     
     if group != 2:
-        # Check specific app limit (24 users per app as requested)
         current_app_users = get_secure_count(db.collection('users').where('appid', '==', data.appid).count())
-            
-        if current_app_users >= 24:
-            plan_name = "Silver Developer" if group == 1 else "Free Developer"
-            raise HTTPException(status_code=400, detail=f"{plan_name} Limit: Max 24 users per app. Upgrade to Gold for unlimited users!")
 
-    # ... rest of your code (duplicate check etc) ...
+        if group == 0 and current_app_users >= 12:
+            raise HTTPException(status_code=400, detail="Free Developer Limit: Max 12 users per app. Upgrade to Silver or Gold for more!")
+        elif group == 1 and current_app_users >= 24:
+            raise HTTPException(status_code=400, detail="Silver Developer Limit: Max 24 users per app. Upgrade to Gold for unlimited users!")
+
     dupes = db.collection('users').where('appid', '==', data.appid).where('username', '==', data.username).limit(1).stream()
     for _ in dupes: raise HTTPException(status_code=400, detail="Username exists")
 
@@ -82,7 +81,6 @@ def user_action(data: UserUpdateAction):
         updates['hwid_locked'] = data.lock_state
 
     elif data.action == "set_expiry":
-        # Save the exact date string provided by the frontend
         if data.expire_str:
             updates['expires_at'] = data.expire_str
 
