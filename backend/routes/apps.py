@@ -57,11 +57,14 @@ def list_apps(data: dict):
     apps_list = []
     for doc in apps_ref:
         d = doc.to_dict()
+        user_agg = db.collection('users').where('appid', '==', d['appid']).count()
+        user_count = get_secure_count(user_agg)
         apps_list.append({
             "name": d['name'], 
             "appid": d['appid'], 
             "app_secret": d['app_secret'],
-            "webhook_config": d.get('webhook_config', {}) 
+            "webhook_config": d.get('webhook_config', {}),
+            "user_count": user_count
         })
     return {"status": "success", "apps": apps_list}
 
