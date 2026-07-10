@@ -19,7 +19,7 @@ def create_app(data: AppCreateRequest):
     seller_query = db.collection('sellers').where('ownerid', '==', data.ownerid).limit(1).stream()
     seller_doc = next(seller_query, None)
     
-    # Fallback: Check if ownerid was used as Document ID manually
+
     if not seller_doc:
         seller_doc = db.collection('sellers').document(data.ownerid).get()
         if not seller_doc.exists:
@@ -27,9 +27,8 @@ def create_app(data: AppCreateRequest):
     
     seller_data = seller_doc.to_dict()
     group = seller_data.get('seller_group', 0)
-    coins = seller_data.get('coins', 0)
     
-    # 1. Check Apps Limit
+
     current_apps_count = get_secure_count(db.collection('applications').where('ownerid', '==', data.ownerid).count())
 
     if group == 0 and current_apps_count >= 2:
@@ -37,14 +36,6 @@ def create_app(data: AppCreateRequest):
     elif group == 1 and current_apps_count >= 10:
         raise HTTPException(status_code=400, detail="Silver Developer Limit: Max 10 Apps. Upgrade to Gold for unlimited apps!")
 
-    # 2. Handle Coin Deduction
-    if group == 0:
-        if coins < 100: raise HTTPException(status_code=400, detail="Free Developer: Need 100 coins to create an app.")
-        seller_doc.reference.update({'coins': coins - 100})
-    elif group == 1:
-        if coins < 50: raise HTTPException(status_code=400, detail="Silver Developer: Need 50 coins to create an app.")
-        seller_doc.reference.update({'coins': coins - 50})
-    # Group 2 (Gold) is free and unlimited
     
     appid = str(uuid.uuid4())
     app_secret = secrets.token_hex(16)
@@ -76,14 +67,14 @@ def list_apps(data: dict):
 
 @router.post("/apps/delete")
 def delete_app(data: AppDeleteRequest):
-    # 1. Find the app
+
     apps = db.collection('applications').where('appid', '==', data.appid).limit(1).stream()
     app_doc = next(apps, None)
     
     if not app_doc:
         raise HTTPException(status_code=404, detail="App not found")
 
-    # 2. Batch Delete Users (Much faster)
+
     batch = db.batch()
     users = db.collection('users').where('appid', '==', data.appid).stream()
     count = 0
@@ -91,13 +82,13 @@ def delete_app(data: AppDeleteRequest):
     for u in users:
         batch.delete(u.reference)
         count += 1
-        # Firestore batch limit is 500
+
         if count >= 450:
             batch.commit()
             batch = db.batch()
             count = 0
             
-    # Delete remaining users and the app itself
+
     batch.delete(app_doc.reference)
     batch.commit()
     
@@ -113,7 +104,7 @@ def save_webhook(data: WebhookSaveRequest):
                 'url': data.webhook_url,
                 'enabled': data.enabled,
                 'show_hwid': data.show_hwid,
-                # 'show_ip': data.show_ip,  <-- REMOVED
+                # 'show_ip': data.show_ip, 
                 'show_app': data.show_app,
                 'show_expiry': data.show_expiry
             }
