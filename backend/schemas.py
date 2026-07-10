@@ -27,6 +27,31 @@ class AdminPublishUpdate(BaseModel):
 
 class UserUpdateAction(BaseModel):
     user_id: str
-    action: str # "reset_hwid", "set_expiry", "toggle_lock"
-    expire_str: str = None # For full date customization
+    action: str 
+    expire_str: str = None 
     lock_state: bool = False
+
+class LicenseCreateRequest(BaseModel):
+    ownerid: str
+    appid: str
+    license_key: str
+    days: int
+    expire_str: str = None
+
+class LicenseListRequest(BaseModel):
+    appid: str
+
+class LicenseDeleteRequest(BaseModel):
+    license_id: str
+
+class LicenseActionRequest(BaseModel):
+    license_id: str
+    action: str
+    expire_str: str = None
+    lock_state: bool = False
+
+class ApiLicenseLoginRequest(BaseModel):
+    ownerid: str
+    app_secret: str
+    license_key: str
+    hwid: str
